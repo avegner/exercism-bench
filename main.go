@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,7 @@ var (
 	codeStartPattern       = "<pre class='line-numbers solution-code'><code class='language-go'>"
 	codeEndPattern         = "</code></pre>"
 	benchStatsRE           = regexp.MustCompile("[[:digit:]]+ ns/op\\s+[[:digit:]]+ B/op\\s+[[:digit:]]+ allocs/op")
+	benchNameRE            = regexp.MustCompile("Benchmark([[:alnum:]]|_|-)+")
 )
 
 var errInvalidUsage = errors.New("invalid usage")
@@ -317,51 +319,84 @@ func totalCmd(tq chan<- task) error {
 func benchCmd(tq chan<- task) error {
 	// walk through all solutions
 	solutionsPath := makePath()
-	wg := sync.WaitGroup{}
-
-	if err := filepath.Walk(solutionsPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			if solutionsPath == path {
-				return nil
-			}
-			return filepath.SkipDir
-		}
-
-		wg.Add(1)
-		tq <- func() {
-			defer wg.Done()
-
-			tmp, err := ioutil.TempDir("", "")
-			if err != nil {
-				return
-			}
-			defer os.RemoveAll(tmp)
-
-			if err = copyFile(path, filepath.Join(tmp, filepath.Base(path)), 0600); err != nil {
-				return
-			}
-			copyFiles(makePath("test-suite"), tmp, 0600)
-
-			stats, err := runBench(tmp, ".")
-			if err != nil {
-				return
-			}
-			mlog.Println(path)
-			for _, st := range stats {
-				mlog.Println(*st)
-			}
-		}
-
-		return nil
-	}); err != nil {
+	// get benchmark names
+	benchs, err := getBenchNames(filepath.Join(solutionsPath, "test-suite"))
+	if err != nil {
 		return err
 	}
+	mlog.Printf("found %v benches", benchs)
+	// run all benches in test suite
+	for _, bn := range benchs {
+		// run each bench separately for all solutions
+		wg := sync.WaitGroup{}
+		sstats := []*solutionStats{}
+		mx := sync.Mutex{}
+		if err := filepath.Walk(solutionsPath, func(spath string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				if solutionsPath == spath {
+					return nil
+				}
+				return filepath.SkipDir
+			}
+			// enqueue benchmarking task
+			wg.Add(1)
+			tq <- func() {
+				defer wg.Done()
+				// create temp dir
+				tmp, err := ioutil.TempDir("", "")
+				if err != nil {
+					return
+				}
+				defer os.RemoveAll(tmp)
+				// copy all required files to temp dir
+				fn := filepath.Base(spath)
+				dpath := filepath.Join(tmp, filepath.Base(spath))
+				if err = copyFile(spath, dpath, 0600); err != nil {
+					return
+				}
+				copyFiles(makePath("test-suite"), tmp, 0600)
+				// run bench
+				bstats, err := runBench(tmp, bn+"$")
+				if err != nil {
+					return
+				}
+				// prepare stats
+				sz, err := getCodeSize(dpath)
+				if err != nil {
+					return
+				}
+				st := &solutionStats{
+					name:       fn,
+					benchStats: bstats[0],
+					size:       sz,
+				}
+				mx.Lock()
+				sstats = append(sstats, st)
+				mx.Unlock()
+				// debug
+				mlog.Printf("%s %v %d", st.name, *st.benchStats, st.size)
+			}
 
-	// wait all tasks
-	wg.Wait()
+			return nil
+		}); err != nil {
+			return err
+		}
+
+		// wait all tasks
+		wg.Wait()
+		// print stats in sorted way
+		sortSolutionStats(sstats)
+		mlog.Println("------ results for %s ------", bn)
+		for i, st := range sstats {
+			mlog.Printf("[%d] %s: %d ns, %d B, %d allocs, %d size",
+				i, st.name, st.benchStats.time, st.benchStats.mem, st.benchStats.allocs, st.size)
+		}
+		mlog.Println("----------------------------", bn)
+	}
+
 	return nil
 }
 
@@ -386,30 +421,43 @@ func cleanCmd(_ chan<- task) error {
 	return nil
 }
 
-type solutions []*solution
-
-type solution struct {
-	user   string
-	uuid   string
-	ok     bool
-	benchs map[string]*benchStats
+type solutionStats struct {
+	name string
+	*benchStats
+	size uint
 }
 
 type benchStats struct {
 	time   uint
 	mem    uint
 	allocs uint
-	size   uint
 }
 
-// sort sorts by time (the most important), mem and allocs (the least).
-/*func (sols solutions) (bench string) {
-
-	sort.SliceStable(br.stats, func(i, j int) bool {
-		lh, rh := br.stats[i], br.stats[j]
-		return lh.time < rh.time || lh.mem < rh.mem || lh.allocs < rh.allocs || lh.size < rh.size
+// sort sorts by time (the most important), mem, allocs and size (the least).
+func sortSolutionStats(sstats []*solutionStats) {
+	sort.SliceStable(sstats, func(i, j int) bool {
+		lh, rh := sstats[i], sstats[j]
+		return lh.benchStats.time < rh.benchStats.time
 	})
-}*/
+	sort.SliceStable(sstats, func(i, j int) bool {
+		lh, rh := sstats[i], sstats[j]
+		return lh.benchStats.time < rh.benchStats.time &&
+			lh.benchStats.mem < rh.benchStats.mem
+	})
+	sort.SliceStable(sstats, func(i, j int) bool {
+		lh, rh := sstats[i], sstats[j]
+		return lh.benchStats.time < rh.benchStats.time &&
+			lh.benchStats.mem < rh.benchStats.mem &&
+			lh.benchStats.allocs < rh.benchStats.allocs
+	})
+	sort.SliceStable(sstats, func(i, j int) bool {
+		lh, rh := sstats[i], sstats[j]
+		return lh.benchStats.time < rh.benchStats.time &&
+			lh.benchStats.mem < rh.benchStats.mem &&
+			lh.benchStats.allocs < rh.benchStats.allocs &&
+			lh.size < rh.size
+	})
+}
 
 // getCodeSize returns number of symbols in code w/o white spaces.
 // TODO: exclude comments as well
@@ -418,7 +466,7 @@ func getCodeSize(path string) (size uint, err error) {
 	if err != nil {
 		return
 	}
-
+	// count all symbols except white spaces
 	for _, r := range string(bs) {
 		if unicode.IsSpace(r) {
 			continue
@@ -482,7 +530,7 @@ func runBench(dir, pattern string) (stats []*benchStats, err error) {
 	if err != nil {
 		return
 	}
-
+	// extract stats
 	for _, match := range benchStatsRE.FindAllString(out, -1) {
 		st := &benchStats{}
 		if _, err = fmt.Sscanf(match, "%d ns/op %d B/op %d allocs/op", &st.time, &st.mem, &st.allocs); err != nil {
@@ -491,4 +539,29 @@ func runBench(dir, pattern string) (stats []*benchStats, err error) {
 		stats = append(stats, st)
 	}
 	return stats, nil
+}
+
+func getBenchNames(testSuitePath string) (names []string, err error) {
+	if err = filepath.Walk(testSuitePath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if path == testSuitePath {
+				return nil
+			}
+			return filepath.SkipDir
+		}
+
+		bs, err := ioutil.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		names = append(names, benchNameRE.FindAllString(string(bs), -1)...)
+		return nil
+	}); err != nil {
+		return
+	}
+	return names, nil
 }
