@@ -20,20 +20,20 @@ import (
 
 const (
 	exercismAddr = "https://exercism.io"
+	trackLang    = "go"
 )
 
 var commands = map[string]func(tq chan<- task) error{
-	"total":    total,
-	"download": download,
-	"bench":    bench,
-	"clean":    clean,
+	"total":    totalCmd,
+	"download": downloadCmd,
+	"bench":    benchCmd,
+	"clean":    cleanCmd,
 }
 
 var (
-	trackFlag       = ""
 	exerciseFlag    = ""
 	downloadDirFlag = "./solutions"
-	debugFlag       = false
+	concurrencyFlag = true
 )
 
 var (
@@ -45,6 +45,7 @@ var (
 	decimalNumberRE        = regexp.MustCompile(decimalNumberPattern)
 	codeStartPattern       = "<pre class='line-numbers solution-code'><code class='language-go'>"
 	codeEndPattern         = "</code></pre>"
+	benchStatsRE           = regexp.MustCompile("[[:digit:]]+ ns/op\\s+[[:digit:]]+ B/op\\s+[[:digit:]]+ allocs/op")
 )
 
 var errInvalidUsage = errors.New("invalid usage")
@@ -53,15 +54,13 @@ var mlog = log.New(os.Stderr, "", 0)
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), `Usage: %s -track <name> -exercise <name> [opt-flag...] COMMAND
+		fmt.Fprintf(flag.CommandLine.Output(), `Usage: %s -exercise=<name> [opt-flag...] COMMAND
 
 Commands:
   total
   	calculate total number of published solutions
   download
   	download published solutions
-  test
-  	test downloaded solutions
   bench
   	bench downloaded solutions
   clean
@@ -71,10 +70,9 @@ Flags:
 `, filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
 	}
-	flag.StringVar(&trackFlag, "track", trackFlag, "language name")
 	flag.StringVar(&exerciseFlag, "exercise", exerciseFlag, "exercise name")
 	flag.StringVar(&downloadDirFlag, "download-dir", downloadDirFlag, "directory for downloaded solutions")
-	flag.BoolVar(&debugFlag, "debug", debugFlag, "debug mode")
+	flag.BoolVar(&concurrencyFlag, "concurrency", concurrencyFlag, "enable concurrency")
 	flag.Parse()
 
 	if err := run(flag.Args()); err != nil {
@@ -91,10 +89,10 @@ func run(args []string) (err error) {
 	if len(args) != 1 {
 		return errInvalidUsage
 	}
-	if trackFlag == "" || exerciseFlag == "" {
+	if exerciseFlag == "" {
 		return errInvalidUsage
 	}
-	cmd, ok := commands[flag.Arg(0)]
+	cmd, ok := commands[args[0]]
 	if !ok {
 		return errInvalidUsage
 	}
@@ -102,7 +100,11 @@ func run(args []string) (err error) {
 	// create pool of general purpose workers
 	tq := make(chan task)
 	defer close(tq)
-	for i := runtime.GOMAXPROCS(0); i > 0; i-- {
+	procs := 1
+	if concurrencyFlag {
+		procs = runtime.GOMAXPROCS(0)
+	}
+	for i := 0; i < procs; i++ {
 		go worker(tq)
 	}
 
@@ -121,15 +123,9 @@ func worker(wq <-chan task) {
 	}
 }
 
-func waitTasks(total uint, done <-chan struct{}) {
-	for i := uint(0); i < total; i++ {
-		<-done
-	}
-}
-
 //nolint:gosec
 func getContent(path string) (content string, url string, err error) {
-	url = strings.Join([]string{exercismAddr, "tracks", trackFlag, "exercises", exerciseFlag, path}, "/")
+	url = strings.Join([]string{exercismAddr, "tracks", trackLang, "exercises", exerciseFlag, path}, "/")
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -150,7 +146,7 @@ func getContent(path string) (content string, url string, err error) {
 }
 
 func makePath(path ...string) string {
-	return filepath.Join(append([]string{downloadDirFlag, trackFlag, exerciseFlag}, path...)...)
+	return filepath.Join(append([]string{downloadDirFlag, trackLang, exerciseFlag}, path...)...)
 }
 
 func normalizeCode(content string) string {
@@ -186,7 +182,7 @@ func extractSolutionCode(content string) string {
 func extractTestSuite(content string) (tsm map[string]string, err error) {
 	sind := strings.Index(content, "<div class='pane pane-2 test-suite'>")
 	eind := strings.Index(content[sind:], "</div>")
-	content = content[sind:sind+eind]
+	content = content[sind : sind+eind]
 	tsm = make(map[string]string)
 
 	for {
@@ -199,7 +195,7 @@ func extractTestSuite(content string) (tsm map[string]string, err error) {
 		cs := strings.Index(content, "package")
 		ce := strings.Index(content, "</code></pre>")
 
-		fn := content[fns+4:fne]
+		fn := content[fns+4 : fne]
 		code := content[cs:ce]
 		tsm[fn] = normalizeCode(code)
 
@@ -212,60 +208,52 @@ func extractTestSuite(content string) (tsm map[string]string, err error) {
 type pathMap map[string]struct{}
 
 func getSolutionPaths(tq chan<- task) (paths pathMap, err error) {
-	mlog.Printf("--- getting solution paths for %s exercise ---", exerciseFlag)
 	paths = make(pathMap)
 
-	// get first solutions page
-	solutionsPage, solutionsURL, err := getContent("solutions")
+	// get first solutions group page
+	firstGroupPage, solutionsURL, err := getContent("solutions")
 	if err != nil {
 		err = fmt.Errorf("download of %s failed: %v", solutionsURL, err)
 		return
 	}
 	// get total of solutions pages
-	ui64, err := strconv.ParseUint(
+	total, err := strconv.ParseUint(
 		decimalNumberRE.FindString(
-			solutionGroupsNumberRE.FindString(solutionsPage)), 10, 32)
+			solutionGroupsNumberRE.FindString(firstGroupPage)), 10, 32)
 	if err != nil {
 		return
 	}
-	groupPagesTotal := uint(ui64)
 
 	// schedule downloads
-	done := make(chan struct{})
+	wg := sync.WaitGroup{}
 	mx := sync.Mutex{}
-	for i := uint(0); i < groupPagesTotal; i++ {
+	for i := uint64(0); i < total; i++ {
 		n := i
-		go func() {
-			tq <- func() {
-				defer func() {
-					done <- struct{}{}
-				}()
-				// get solution group page
-				groupPage, groupURL, err := getContent(fmt.Sprintf("solutions?page=%d", n+1))
-				if err != nil {
-					mlog.Printf("download of %s failed: %v", groupURL, err)
-					return
-				}
-				mlog.Printf("downloaded %s", groupURL)
-				// get solution paths
-				for _, p := range solutionPathRE.FindAllString(groupPage, -1) {
-					// ignore duplicates if they appear
-					mx.Lock()
-					paths[p] = struct{}{}
-					mx.Unlock()
-				}
+		wg.Add(1)
+		tq <- func() {
+			defer wg.Done()
+			// get solution group page
+			groupPage, groupURL, err := getContent(fmt.Sprintf("solutions?page=%d", n+1))
+			if err != nil {
+				mlog.Printf("download of %s failed: %v", groupURL, err)
+				return
 			}
-		}()
+			// get solution paths
+			for _, p := range solutionPathRE.FindAllString(groupPage, -1) {
+				// ignore duplicates if they appear
+				mx.Lock()
+				paths[p] = struct{}{}
+				mx.Unlock()
+			}
+		}
 	}
 
 	// wait all tasks
-	waitTasks(groupPagesTotal, done)
-	mlog.Printf("---> found %d solutions", len(paths))
+	wg.Wait()
 	return paths, nil
 }
 
 func getSolutionCodes(tq chan<- task, paths pathMap) error {
-	mlog.Printf("--- getting solution codes for %s exercise ---", exerciseFlag)
 	storePath := makePath()
 	if err := os.MkdirAll(storePath, 0700); err != nil {
 		return err
@@ -278,10 +266,9 @@ func getSolutionCodes(tq chan<- task, paths pathMap) error {
 			mlog.Printf("download of test suite %s failed: %v", solutionURL, err)
 			return err
 		}
-		mlog.Printf("downloaded test suite %s", solutionURL)
 		// store test suite
 		ts, _ := extractTestSuite(solutionPage)
-		tsp := filepath.Join(storePath,"test-suite")
+		tsp := filepath.Join(storePath, "test-suite")
 		_ = os.Mkdir(tsp, 0700)
 		for fn, fc := range ts {
 			fp := filepath.Join(tsp, fn)
@@ -293,47 +280,45 @@ func getSolutionCodes(tq chan<- task, paths pathMap) error {
 	}
 
 	// schedule downloads and stores
-	done := make(chan struct{})
+	wg := sync.WaitGroup{}
 	for p := range paths {
 		path := p
-		go func() {
-			tq <- func() {
-				defer func() {
-					done <- struct{}{}
-				}()
-				// get solution page
-				solutionPage, solutionURL, err := getContent(path)
-				if err != nil {
-					mlog.Printf("download of %s failed: %v", solutionURL, err)
-					return
-				}
-				mlog.Printf("downloaded %s", solutionURL)
-				// store solution code
-				fp := makePath(uuidRE.FindString(path) + ".go")
-				if err := ioutil.WriteFile(fp, []byte(extractSolutionCode(solutionPage)), 0600); err != nil {
-					mlog.Printf("write of %s failed: %v", fp, err)
-				}
+		wg.Add(1)
+		tq <- func() {
+			defer wg.Done()
+			// get solution page
+			solutionPage, solutionURL, err := getContent(path)
+			if err != nil {
+				mlog.Printf("download of %s failed: %v", solutionURL, err)
+				return
 			}
-		}()
+			// store solution code
+			fp := makePath(uuidRE.FindString(path) + ".go")
+			if err := ioutil.WriteFile(fp, []byte(extractSolutionCode(solutionPage)), 0600); err != nil {
+				mlog.Printf("write of %s failed: %v", fp, err)
+			}
+		}
 	}
 
 	// wait all tasks
-	waitTasks(uint(len(paths)), done)
-	mlog.Println("---> done")
+	wg.Wait()
 	return nil
 }
 
-func total(tq chan<- task) error {
-	if exerciseFlag == "" {
-		return errInvalidUsage
+func totalCmd(tq chan<- task) error {
+	paths, err := getSolutionPaths(tq)
+	if err != nil {
+		return err
 	}
-	_, err := getSolutionPaths(tq)
-	return err
+	mlog.Printf("solutions total: %d", len(paths))
+	return nil
 }
 
-func bench(_ chan<- task) error {
+func benchCmd(tq chan<- task) error {
 	// walk through all solutions
 	solutionsPath := makePath()
+	wg := sync.WaitGroup{}
+
 	if err := filepath.Walk(solutionsPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -345,45 +330,54 @@ func bench(_ chan<- task) error {
 			return filepath.SkipDir
 		}
 
-		tmp, err := ioutil.TempDir("", "")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(tmp)
+		wg.Add(1)
+		tq <- func() {
+			defer wg.Done()
 
-		if err = copyFile(path, filepath.Join(tmp, filepath.Base(path)), 0600); err != nil {
-			return err
-		}
-		copyFiles(makePath("test-suite"), tmp, 0600)
+			tmp, err := ioutil.TempDir("", "")
+			if err != nil {
+				return
+			}
+			defer os.RemoveAll(tmp)
 
-		mlog.Println(path)
-		mlog.Println(runBench(tmp))
+			if err = copyFile(path, filepath.Join(tmp, filepath.Base(path)), 0600); err != nil {
+				return
+			}
+			copyFiles(makePath("test-suite"), tmp, 0600)
+
+			stats, err := runBench(tmp, ".")
+			if err != nil {
+				return
+			}
+			mlog.Println(path)
+			for _, st := range stats {
+				mlog.Println(*st)
+			}
+		}
+
 		return nil
 	}); err != nil {
 		return err
 	}
 
-	// prepare bench environment for each solution
-
-	// run bench
-
-	// collect and store stats
-	// report all stats in sorted way
+	// wait all tasks
+	wg.Wait()
 	return nil
 }
 
-func download(tq chan<- task) error {
-	if exerciseFlag == "" {
-		return errInvalidUsage
-	}
+func downloadCmd(tq chan<- task) error {
 	paths, err := getSolutionPaths(tq)
 	if err != nil {
 		return err
 	}
-	return getSolutionCodes(tq, paths)
+	if err = getSolutionCodes(tq, paths); err != nil {
+		return err
+	}
+	mlog.Printf("%d solutions downloaded", len(paths))
+	return nil
 }
 
-func clean(_ chan<- task) error {
+func cleanCmd(_ chan<- task) error {
 	cp := makePath()
 	if err := os.RemoveAll(cp); err != nil {
 		return err
@@ -480,7 +474,21 @@ func getWorkspacePath() (path string, err error) {
 	return strings.Trim(out, "\r\n"), nil
 }
 
-// TODO: extract stats
-func runBench(dir string) (out string, err error) {
-	return runCmd("go", dir, "test", "-bench", ".", "-benchmem")
+func runBench(dir, pattern string) (stats []*benchStats, err error) {
+	if pattern == "" {
+		pattern = "."
+	}
+	out, err := runCmd("go", dir, "test", "-bench", pattern, "-benchmem")
+	if err != nil {
+		return
+	}
+
+	for _, match := range benchStatsRE.FindAllString(out, -1) {
+		st := &benchStats{}
+		if _, err = fmt.Sscanf(match, "%d ns/op %d B/op %d allocs/op", &st.time, &st.mem, &st.allocs); err != nil {
+			return
+		}
+		stats = append(stats, st)
+	}
+	return stats, nil
 }
