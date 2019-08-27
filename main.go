@@ -47,7 +47,7 @@ var (
 	codeStartPattern       = "<pre class='line-numbers solution-code'><code class='language-go'>"
 	codeEndPattern         = "</code></pre>"
 	benchStatsRE           = regexp.MustCompile("[[:digit:]]+ ns/op\\s+[[:digit:]]+ B/op\\s+[[:digit:]]+ allocs/op")
-	benchNameRE            = regexp.MustCompile("Benchmark([[:alnum:]]|_|-)+")
+	benchNameRE            = regexp.MustCompile("Benchmark([[:alnum:]]|_)+")
 )
 
 var errInvalidUsage = errors.New("invalid usage")
@@ -100,12 +100,12 @@ func run(args []string) (err error) {
 	}
 
 	// create pool of general purpose workers
-	tq := make(chan task)
-	defer close(tq)
 	procs := 1
 	if concurrencyFlag {
 		procs = runtime.GOMAXPROCS(0)
 	}
+	tq := make(chan task, procs)
+	defer close(tq)
 	for i := 0; i < procs; i++ {
 		go worker(tq)
 	}
@@ -324,77 +324,85 @@ func benchCmd(tq chan<- task) error {
 	if err != nil {
 		return err
 	}
-	mlog.Printf("found %v benches", benchs)
-	// run all benches in test suite
+	if len(benchs) == 0 {
+		return errors.New("found 0 benches")
+	}
 	for _, bn := range benchs {
-		// run each bench separately for all solutions
-		wg := sync.WaitGroup{}
-		sstats := []*solutionStats{}
-		mx := sync.Mutex{}
-		if err := filepath.Walk(solutionsPath, func(spath string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			if info.IsDir() {
-				if solutionsPath == spath {
-					return nil
-				}
-				return filepath.SkipDir
-			}
-			// enqueue benchmarking task
-			wg.Add(1)
-			tq <- func() {
-				defer wg.Done()
-				// create temp dir
-				tmp, err := ioutil.TempDir("", "")
-				if err != nil {
-					return
-				}
-				defer os.RemoveAll(tmp)
-				// copy all required files to temp dir
-				fn := filepath.Base(spath)
-				dpath := filepath.Join(tmp, filepath.Base(spath))
-				if err = copyFile(spath, dpath, 0600); err != nil {
-					return
-				}
-				copyFiles(makePath("test-suite"), tmp, 0600)
-				// run bench
-				bstats, err := runBench(tmp, bn+"$")
-				if err != nil {
-					return
-				}
-				// prepare stats
-				sz, err := getCodeSize(dpath)
-				if err != nil {
-					return
-				}
-				st := &solutionStats{
-					name:       fn,
-					benchStats: bstats[0],
-					size:       sz,
-				}
-				mx.Lock()
-				sstats = append(sstats, st)
-				mx.Unlock()
-				// debug
-				mlog.Printf("%s %v %d", st.name, *st.benchStats, st.size)
-			}
-
-			return nil
-		}); err != nil {
+		mlog.Printf("found %s benchmark", bn)
+	}
+	// run all benches in test suite for all solutions
+	// run each bench separately for all solutions
+	wg := sync.WaitGroup{}
+	sstats := []*solutionStats{}
+	mx := sync.Mutex{}
+	if err := filepath.Walk(solutionsPath, func(spath string, info os.FileInfo, err error) error {
+		if err != nil {
 			return err
 		}
+		if info.IsDir() {
+			if solutionsPath == spath {
+				return nil
+			}
+			return filepath.SkipDir
+		}
+		// enqueue benchmarking task
+		wg.Add(1)
+		tq <- func() {
+			defer wg.Done()
+			// create temp dir
+			tmp, err := ioutil.TempDir("", "")
+			if err != nil {
+				return
+			}
+			defer os.RemoveAll(tmp)
+			// copy all required files to temp dir
+			fn := filepath.Base(spath)
+			dpath := filepath.Join(tmp, filepath.Base(spath))
+			if err = copyFile(spath, dpath, 0600); err != nil {
+				return
+			}
+			copyFiles(makePath("test-suite"), tmp, 0600)
+			// run bench
+			bstats, err := runBench(tmp, ".")
+			if err != nil {
+				mlog.Printf("%s: %v", fn, err)
+				return
+			}
+			// prepare stats
+			sz, err := getCodeSize(dpath)
+			if err != nil {
+				return
+			}
+			st := &solutionStats{
+				name:   fn,
+				bstats: bstats,
+				size:   sz,
+			}
+			mx.Lock()
+			sstats = append(sstats, st)
+			mx.Unlock()
+			// progress
+			mlog.Printf("%s: ok", st.name)
+		}
 
-		// wait all tasks
-		wg.Wait()
-		// print stats in sorted way
-		sortSolutionStats(sstats)
-		mlog.Printf("------ results for %s ------", bn)
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	// wait all tasks
+	wg.Wait()
+	// print stats in sorted way
+	mlog.Println()
+	for _, bn := range benchs {
+		sortStatsByBench(sstats, bn)
+		mlog.Printf("------------------------------ %s ------------------------------", bn)
+		mlog.Println()
 		for i, st := range sstats {
 			mlog.Printf("[%4d] %s: %9d ns, %9d B mem, %9d allocs, %9d symbols",
-				i, st.name, st.benchStats.time, st.benchStats.mem, st.benchStats.allocs, st.size)
+				i, st.name, st.bstats[bn].time, st.bstats[bn].mem, st.bstats[bn].allocs, st.size)
 		}
-		mlog.Println("----------------------------")
+		mlog.Println()
 	}
 
 	return nil
@@ -423,7 +431,7 @@ func cleanCmd(_ chan<- task) error {
 
 type solutionStats struct {
 	name string
-	*benchStats
+	bstats map[string]*benchStats
 	size uint
 }
 
@@ -434,19 +442,19 @@ type benchStats struct {
 }
 
 // sort sorts by time (the most important), mem, allocs and size (the least).
-func sortSolutionStats(sstats []*solutionStats) {
+func sortStatsByBench(sstats []*solutionStats, benchName string) {
 	sort.SliceStable(sstats, func(i, j int) bool {
-		lh, rh := sstats[i], sstats[j]
-		return lh.benchStats.time < rh.benchStats.time ||
-			(lh.benchStats.time == rh.benchStats.time &&
-				lh.benchStats.mem < rh.benchStats.mem) ||
-			(lh.benchStats.time == rh.benchStats.time &&
-				lh.benchStats.mem == rh.benchStats.mem &&
-				lh.benchStats.allocs < rh.benchStats.allocs) ||
-			(lh.benchStats.time == rh.benchStats.time &&
-				lh.benchStats.mem == rh.benchStats.mem &&
-				lh.benchStats.allocs == rh.benchStats.allocs &&
-				lh.size < rh.size)
+		lh, rh := sstats[i].bstats[benchName], sstats[j].bstats[benchName]
+		return lh.time < rh.time ||
+			(lh.time == rh.time &&
+				lh.mem < rh.mem) ||
+			(lh.time == rh.time &&
+				lh.mem == rh.mem &&
+				lh.allocs < rh.allocs) ||
+			(lh.time == rh.time &&
+				lh.mem == rh.mem &&
+				lh.allocs == rh.allocs &&
+				sstats[i].size < sstats[j].size)
 	})
 }
 
@@ -513,7 +521,7 @@ func getWorkspacePath() (path string, err error) {
 	return strings.Trim(out, "\r\n"), nil
 }
 
-func runBench(dir, pattern string) (stats []*benchStats, err error) {
+func runBench(dir, pattern string) (stats map[string]*benchStats, err error) {
 	if pattern == "" {
 		pattern = "."
 	}
@@ -522,12 +530,16 @@ func runBench(dir, pattern string) (stats []*benchStats, err error) {
 		return
 	}
 	// extract stats
-	for _, match := range benchStatsRE.FindAllString(out, -1) {
+	ns := benchNameRE.FindAllString(out, -1)
+	ss := benchStatsRE.FindAllString(out, -1)
+	stats = make(map[string]*benchStats, len(ns))
+
+	for i, s := range ss {
 		st := &benchStats{}
-		if _, err = fmt.Sscanf(match, "%d ns/op %d B/op %d allocs/op", &st.time, &st.mem, &st.allocs); err != nil {
+		if _, err = fmt.Sscanf(s, "%d ns/op %d B/op %d allocs/op", &st.time, &st.mem, &st.allocs); err != nil {
 			return
 		}
-		stats = append(stats, st)
+		stats[ns[i]] = st
 	}
 	return stats, nil
 }
