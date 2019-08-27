@@ -389,12 +389,12 @@ func benchCmd(tq chan<- task) error {
 		wg.Wait()
 		// print stats in sorted way
 		sortSolutionStats(sstats)
-		mlog.Println("------ results for %s ------", bn)
+		mlog.Printf("------ results for %s ------", bn)
 		for i, st := range sstats {
-			mlog.Printf("[%d] %s: %d ns, %d B, %d allocs, %d size",
+			mlog.Printf("[%4d] %s: %9d ns, %9d B mem, %9d allocs, %9d symbols",
 				i, st.name, st.benchStats.time, st.benchStats.mem, st.benchStats.allocs, st.size)
 		}
-		mlog.Println("----------------------------", bn)
+		mlog.Println("----------------------------")
 	}
 
 	return nil
@@ -437,25 +437,16 @@ type benchStats struct {
 func sortSolutionStats(sstats []*solutionStats) {
 	sort.SliceStable(sstats, func(i, j int) bool {
 		lh, rh := sstats[i], sstats[j]
-		return lh.benchStats.time < rh.benchStats.time
-	})
-	sort.SliceStable(sstats, func(i, j int) bool {
-		lh, rh := sstats[i], sstats[j]
-		return lh.benchStats.time < rh.benchStats.time &&
-			lh.benchStats.mem < rh.benchStats.mem
-	})
-	sort.SliceStable(sstats, func(i, j int) bool {
-		lh, rh := sstats[i], sstats[j]
-		return lh.benchStats.time < rh.benchStats.time &&
-			lh.benchStats.mem < rh.benchStats.mem &&
-			lh.benchStats.allocs < rh.benchStats.allocs
-	})
-	sort.SliceStable(sstats, func(i, j int) bool {
-		lh, rh := sstats[i], sstats[j]
-		return lh.benchStats.time < rh.benchStats.time &&
-			lh.benchStats.mem < rh.benchStats.mem &&
-			lh.benchStats.allocs < rh.benchStats.allocs &&
-			lh.size < rh.size
+		return lh.benchStats.time < rh.benchStats.time ||
+			(lh.benchStats.time == rh.benchStats.time &&
+				lh.benchStats.mem < rh.benchStats.mem) ||
+			(lh.benchStats.time == rh.benchStats.time &&
+				lh.benchStats.mem == rh.benchStats.mem &&
+				lh.benchStats.allocs < rh.benchStats.allocs) ||
+			(lh.benchStats.time == rh.benchStats.time &&
+				lh.benchStats.mem == rh.benchStats.mem &&
+				lh.benchStats.allocs == rh.benchStats.allocs &&
+				lh.size < rh.size)
 	})
 }
 
