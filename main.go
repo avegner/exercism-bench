@@ -46,7 +46,7 @@ var (
 	decimalNumberRE        = regexp.MustCompile(decimalNumberPattern)
 	codeStartPattern       = "<pre class='line-numbers solution-code'><code class='language-go'>"
 	codeEndPattern         = "</code></pre>"
-	benchStatsRE           = regexp.MustCompile("[[:digit:]]+ ns/op\\s+[[:digit:]]+ B/op\\s+[[:digit:]]+ allocs/op")
+	benchStatsRE           = regexp.MustCompile(`[[:digit:]]+ ns/op\s+[[:digit:]]+ B/op\s+[[:digit:]]+ allocs/op`)
 	benchNameRE            = regexp.MustCompile("Benchmark([[:alnum:]]|_)+")
 )
 
@@ -183,7 +183,13 @@ func extractSolutionCode(content string) string {
 
 func extractTestSuite(content string) (tsm map[string]string, err error) {
 	sind := strings.Index(content, "<div class='pane pane-2 test-suite'>")
+	if sind == -1 {
+		return nil, errors.New("no suite start")
+	}
 	eind := strings.Index(content[sind:], "</div>")
+	if eind == -1 {
+		return nil, errors.New("no suite end")
+	}
 	content = content[sind : sind+eind]
 	tsm = make(map[string]string)
 
@@ -194,8 +200,17 @@ func extractTestSuite(content string) (tsm map[string]string, err error) {
 		}
 
 		fne := strings.Index(content, "</h3>")
+		if fne == -1 {
+			return nil, errors.New("no test file name end")
+		}
 		cs := strings.Index(content, "package")
+		if cs == -1 {
+			return nil, errors.New("no test file start")
+		}
 		ce := strings.Index(content, "</code></pre>")
+		if ce == -1 {
+			return nil, errors.New("no test file end")
+		}
 
 		fn := content[fns+4 : fne]
 		code := content[cs:ce]
@@ -204,7 +219,7 @@ func extractTestSuite(content string) (tsm map[string]string, err error) {
 		content = content[ce+12:]
 	}
 
-	return
+	return tsm, nil
 }
 
 type pathMap map[string]struct{}
@@ -361,7 +376,9 @@ func benchCmd(tq chan<- task) error {
 			if err = copyFile(spath, dpath, 0600); err != nil {
 				return
 			}
-			copyFiles(makePath("test-suite"), tmp, 0600)
+			if err = copyFiles(makePath("test-suite"), tmp, 0600); err != nil {
+				return
+			}
 			// run bench
 			bstats, err := runBench(tmp, ".")
 			if err != nil {
@@ -430,9 +447,9 @@ func cleanCmd(_ chan<- task) error {
 }
 
 type solutionStats struct {
-	name string
+	name   string
 	bstats map[string]*benchStats
-	size uint
+	size   uint
 }
 
 type benchStats struct {
@@ -497,8 +514,7 @@ func copyFiles(srcDir, destDir string, perm os.FileMode) error {
 			return filepath.SkipDir
 		}
 
-		copyFile(path, filepath.Join(destDir, filepath.Base(path)), 0600)
-		return nil
+		return copyFile(path, filepath.Join(destDir, filepath.Base(path)), perm)
 	})
 }
 
@@ -511,14 +527,6 @@ func runCmd(name, dir string, arg ...string) (out string, err error) {
 		return
 	}
 	return string(bs), err
-}
-
-func getWorkspacePath() (path string, err error) {
-	out, err := runCmd("exercism", "", "workspace")
-	if err != nil {
-		return
-	}
-	return strings.Trim(out, "\r\n"), nil
 }
 
 func runBench(dir, pattern string) (stats map[string]*benchStats, err error) {
