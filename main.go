@@ -4,6 +4,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -475,19 +478,59 @@ func sortStatsByBench(sstats []*solutionStats, benchName string) {
 	})
 }
 
+type codeRange struct {
+	start int
+	end   int
+}
+
+func insideRanges(ranges []*codeRange, offset int) bool {
+	for _, r := range ranges {
+		if offset >= r.start && offset < r.end {
+			return true
+		}
+	}
+	return false
+}
+
 // getCodeSize returns number of symbols in code w/o white spaces.
-// TODO: exclude comments as well
 func getCodeSize(path string) (size uint, err error) {
 	bs, err := ioutil.ReadFile(path)
 	if err != nil {
 		return
 	}
-	// count all symbols except white spaces
-	for _, r := range string(bs) {
-		if unicode.IsSpace(r) {
+	// exclude comments and ignore white spaces in string and char literals
+	exclude := []*codeRange{}
+	ignore := []*codeRange{}
+	fs := token.NewFileSet()
+	f, err := parser.ParseFile(fs, path, bs, parser.ParseComments)
+	if err != nil {
+		return
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.Comment:
+			exclude = append(exclude, &codeRange{
+				start: fs.Position(v.Pos()).Offset,
+				end:   fs.Position(v.End()).Offset,
+			})
+		case *ast.BasicLit:
+			if v.Kind == token.STRING || v.Kind == token.CHAR {
+				ignore = append(ignore, &codeRange{
+					start: fs.Position(v.Pos()).Offset,
+					end:   fs.Position(v.End()).Offset,
+				})
+			}
+		}
+		return true
+	})
+	// count only relevant code symbols
+	for off, r := range string(bs) {
+		if insideRanges(exclude, off) {
 			continue
 		}
-		size++
+		if insideRanges(ignore, off) || !unicode.IsSpace(r) {
+			size++
+		}
 	}
 	return size, nil
 }
