@@ -4,9 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -15,11 +12,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"unicode"
 )
 
 const (
@@ -49,8 +44,6 @@ var (
 	decimalNumberRE        = regexp.MustCompile(decimalNumberPattern)
 	codeStartPattern       = "<pre class='line-numbers solution-code'><code class='language-go'>"
 	codeEndPattern         = "</code></pre>"
-	benchStatsRE           = regexp.MustCompile(`[[:digit:]]+ ns/op\s+[[:digit:]]+ B/op\s+[[:digit:]]+ allocs/op`)
-	benchNameRE            = regexp.MustCompile("Benchmark([[:alnum:]]|_)+")
 )
 
 var errInvalidUsage = errors.New("invalid usage")
@@ -376,10 +369,10 @@ func benchCmd(tq chan<- task) error {
 			// copy all required files to temp dir
 			fn := filepath.Base(spath)
 			dpath := filepath.Join(tmp, filepath.Base(spath))
-			if err = copyFile(spath, dpath, 0600); err != nil {
+			if err = copyFile(spath, dpath); err != nil {
 				return
 			}
-			if err = copyFiles(makePath("test-suite"), tmp, 0600); err != nil {
+			if err = copyFiles(makePath("test-suite"), tmp); err != nil {
 				return
 			}
 			// run bench
@@ -395,7 +388,7 @@ func benchCmd(tq chan<- task) error {
 			}
 			st := &solutionStats{
 				name:   fn,
-				bstats: bstats,
+				benchs: bstats,
 				size:   sz,
 			}
 			mx.Lock()
@@ -420,7 +413,7 @@ func benchCmd(tq chan<- task) error {
 		mlog.Println()
 		for i, st := range sstats {
 			mlog.Printf("[%4d] %s: %9d ns, %9d B mem, %9d allocs, %9d symbols",
-				i, st.name, st.bstats[bn].time, st.bstats[bn].mem, st.bstats[bn].allocs, st.size)
+				i, st.name, st.benchs[bn].time, st.benchs[bn].mem, st.benchs[bn].allocs, st.size)
 		}
 		mlog.Println()
 	}
@@ -449,103 +442,27 @@ func cleanCmd(_ chan<- task) error {
 	return nil
 }
 
-type solutionStats struct {
-	name   string
-	bstats map[string]*benchStats
-	size   uint
-}
-
-type benchStats struct {
-	time   uint
-	mem    uint
-	allocs uint
-}
-
-// sort sorts by time (the most important), mem, allocs and size (the least).
-func sortStatsByBench(sstats []*solutionStats, benchName string) {
-	sort.SliceStable(sstats, func(i, j int) bool {
-		lh, rh := sstats[i].bstats[benchName], sstats[j].bstats[benchName]
-		return lh.time < rh.time ||
-			(lh.time == rh.time &&
-				lh.mem < rh.mem) ||
-			(lh.time == rh.time &&
-				lh.mem == rh.mem &&
-				lh.allocs < rh.allocs) ||
-			(lh.time == rh.time &&
-				lh.mem == rh.mem &&
-				lh.allocs == rh.allocs &&
-				sstats[i].size < sstats[j].size)
-	})
-}
-
-type codeRange struct {
-	start int
-	end   int
-}
-
-func insideRanges(ranges []*codeRange, offset int) bool {
-	for _, r := range ranges {
-		if offset >= r.start && offset < r.end {
-			return true
-		}
-	}
-	return false
-}
-
-// getCodeSize returns number of symbols in code w/o white spaces.
-func getCodeSize(path string) (size uint, err error) {
-	bs, err := ioutil.ReadFile(path)
-	if err != nil {
-		return
-	}
-	// exclude comments and ignore white spaces in string and char literals
-	exclude := []*codeRange{}
-	ignore := []*codeRange{}
-	fs := token.NewFileSet()
-	f, err := parser.ParseFile(fs, path, bs, parser.ParseComments)
-	if err != nil {
-		return
-	}
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch v := n.(type) {
-		case *ast.Comment:
-			exclude = append(exclude, &codeRange{
-				start: fs.Position(v.Pos()).Offset,
-				end:   fs.Position(v.End()).Offset,
-			})
-		case *ast.BasicLit:
-			if v.Kind == token.STRING || v.Kind == token.CHAR {
-				ignore = append(ignore, &codeRange{
-					start: fs.Position(v.Pos()).Offset,
-					end:   fs.Position(v.End()).Offset,
-				})
-			}
-		}
-		return true
-	})
-	// count only relevant code symbols
-	for off, r := range string(bs) {
-		if insideRanges(exclude, off) {
-			continue
-		}
-		if insideRanges(ignore, off) || !unicode.IsSpace(r) {
-			size++
-		}
-	}
-	return size, nil
-}
-
-func copyFile(src, dest string, perm os.FileMode) error {
-	bs, err := ioutil.ReadFile(src)
+// copyFile copies only a regular file.
+func copyFile(srcPath, destPath string) error {
+	// check file type
+	fi, err := os.Stat(srcPath)
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(dest, bs, perm)
+	if fi.Mode()&os.ModeType != 0 {
+		return errors.New("not a regular file")
+	}
+	// copy data
+	bs, err := ioutil.ReadFile(srcPath)
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(destPath, bs, fi.Mode())
 }
 
 // copyFiles copies all files from srcDir to destDir.
 // All nested dirs with files are ignored.
-func copyFiles(srcDir, destDir string, perm os.FileMode) error {
+func copyFiles(srcDir, destDir string) error {
 	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -556,8 +473,7 @@ func copyFiles(srcDir, destDir string, perm os.FileMode) error {
 			}
 			return filepath.SkipDir
 		}
-
-		return copyFile(path, filepath.Join(destDir, filepath.Base(path)), perm)
+		return copyFile(path, filepath.Join(destDir, filepath.Base(path)))
 	})
 }
 
@@ -570,52 +486,4 @@ func runCmd(name, dir string, arg ...string) (out string, err error) {
 		return
 	}
 	return string(bs), err
-}
-
-func runBench(dir, pattern string) (stats map[string]*benchStats, err error) {
-	if pattern == "" {
-		pattern = "."
-	}
-	out, err := runCmd("go", dir, "test", "-bench", pattern, "-benchmem")
-	if err != nil {
-		return
-	}
-	// extract stats
-	ns := benchNameRE.FindAllString(out, -1)
-	ss := benchStatsRE.FindAllString(out, -1)
-	stats = make(map[string]*benchStats, len(ns))
-
-	for i, s := range ss {
-		st := &benchStats{}
-		if _, err = fmt.Sscanf(s, "%d ns/op %d B/op %d allocs/op", &st.time, &st.mem, &st.allocs); err != nil {
-			return
-		}
-		stats[ns[i]] = st
-	}
-	return stats, nil
-}
-
-func getBenchNames(testSuitePath string) (names []string, err error) {
-	if err = filepath.Walk(testSuitePath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			if path == testSuitePath {
-				return nil
-			}
-			return filepath.SkipDir
-		}
-
-		bs, err := ioutil.ReadFile(path)
-		if err != nil {
-			return err
-		}
-
-		names = append(names, benchNameRE.FindAllString(string(bs), -1)...)
-		return nil
-	}); err != nil {
-		return
-	}
-	return names, nil
 }
