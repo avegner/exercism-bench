@@ -30,6 +30,7 @@ var (
 	exerciseFlag    = ""
 	downloadDirFlag = "./solutions"
 	concurrencyFlag = true
+	threadsFlag     = runtime.GOMAXPROCS(0)
 )
 
 var (
@@ -66,6 +67,7 @@ Flags:
 	flag.StringVar(&exerciseFlag, "exercise", exerciseFlag, "exercise name")
 	flag.StringVar(&downloadDirFlag, "download-dir", downloadDirFlag, "directory for downloaded solutions")
 	flag.BoolVar(&concurrencyFlag, "concurrency", concurrencyFlag, "enable concurrency")
+	flag.IntVar(&threadsFlag, "threads", threadsFlag, "number of threads")
 	flag.Parse()
 
 	if err := run(flag.Args()); err != nil {
@@ -93,6 +95,7 @@ func run(args []string) (err error) {
 	// create pool of general purpose workers
 	procs := 1
 	if concurrencyFlag {
+		runtime.GOMAXPROCS(threadsFlag)
 		procs = runtime.GOMAXPROCS(0)
 	}
 	tq := make(chan task, procs)

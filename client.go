@@ -5,13 +5,18 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strings"
+	"time"
 )
+
+var httpClient = http.Client{
+	Timeout: 5 * time.Second,
+}
 
 //nolint:gosec
 func getContent(path string) (content string, url string, err error) {
 	url = strings.Join([]string{exercismAddr, "tracks", trackLang, "exercises", exerciseFlag, path}, "/")
 
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return
 	}
