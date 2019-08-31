@@ -68,13 +68,13 @@ func getBenchNames(testSuitePath string) (bnames []string, err error) {
 }
 
 // runBench runs benchmarks matching pattern in a given dir.
-func runBench(dirPath, pattern string) (bstats map[string]*benchStats, err error) {
+func runBench(dirPath, pattern string, arg ...string) (bstats map[string]*benchStats, err error) {
 	// default pattern
 	if pattern == "" {
 		pattern = "."
 	}
 	// run benchmarks with tests
-	out, err := runCmd("go", dirPath, "test", "-bench", pattern, "-benchmem")
+	out, err := runCmd("go", dirPath, append([]string{"test", "-bench", pattern, "-benchmem"}, arg...)...)
 	if err != nil {
 		return
 	}

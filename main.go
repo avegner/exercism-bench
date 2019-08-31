@@ -19,7 +19,7 @@ const (
 	trackLang    = "go"
 )
 
-var commands = map[string]func(tq chan<- task) error{
+var commands = map[string]func(tq chan<- task, args []string) error{
 	"total":    totalCmd,
 	"download": downloadCmd,
 	"bench":    benchCmd,
@@ -55,7 +55,7 @@ Commands:
   	calculate total number of published solutions
   download
   	download published solutions
-  bench
+  bench [go-test-flag...]
   	bench downloaded solutions
   clean
   	remove downloaded solutions
@@ -81,7 +81,7 @@ Flags:
 }
 
 func run(args []string) (err error) {
-	if len(args) != 1 {
+	if len(args) < 1 {
 		return errInvalidUsage
 	}
 	if exerciseFlag == "" {
@@ -104,7 +104,7 @@ func run(args []string) (err error) {
 		go worker(tq)
 	}
 
-	return cmd(tq)
+	return cmd(tq, args[1:])
 }
 
 type task func()
@@ -119,7 +119,10 @@ func worker(wq <-chan task) {
 	}
 }
 
-func totalCmd(tq chan<- task) error {
+func totalCmd(tq chan<- task, args []string) error {
+	if len(args) != 0 {
+		return errInvalidUsage
+	}
 	paths, err := getSolutionPaths(tq)
 	if err != nil {
 		return err
@@ -128,7 +131,7 @@ func totalCmd(tq chan<- task) error {
 	return nil
 }
 
-func benchCmd(tq chan<- task) error {
+func benchCmd(tq chan<- task, args []string) error {
 	// walk through all solutions
 	solutionsPath := makePath()
 	// get benchmark names
@@ -164,6 +167,7 @@ func benchCmd(tq chan<- task) error {
 			// create temp dir
 			tmp, err := ioutil.TempDir("", "")
 			if err != nil {
+				mlog.Printf("temp dir create error: %v", err)
 				return
 			}
 			defer os.RemoveAll(tmp)
@@ -171,13 +175,15 @@ func benchCmd(tq chan<- task) error {
 			fn := filepath.Base(spath)
 			dpath := filepath.Join(tmp, filepath.Base(spath))
 			if err = copyFile(spath, dpath); err != nil {
+				mlog.Printf("copy file error: %v", err)
 				return
 			}
 			if err = copyFiles(makePath("test-suite"), tmp); err != nil {
+				mlog.Printf("copy test suite files error: %v", err)
 				return
 			}
 			// run bench
-			bstats, err := runBench(tmp, ".")
+			bstats, err := runBench(tmp, ".", args...)
 			if err != nil {
 				mlog.Printf("%s: %v", fn, err)
 				return
@@ -185,6 +191,7 @@ func benchCmd(tq chan<- task) error {
 			// prepare stats
 			sz, err := getCodeSize(dpath)
 			if err != nil {
+				mlog.Printf("%s: %v", fn, err)
 				return
 			}
 			st := &solutionStats{
@@ -198,7 +205,6 @@ func benchCmd(tq chan<- task) error {
 			// progress
 			mlog.Printf("%s: ok", st.name)
 		}
-
 		return nil
 	}); err != nil {
 		return err
@@ -222,19 +228,34 @@ func benchCmd(tq chan<- task) error {
 	return nil
 }
 
-func downloadCmd(tq chan<- task) error {
+func downloadCmd(tq chan<- task, args []string) error {
+	if len(args) != 0 {
+		return errInvalidUsage
+	}
 	paths, err := getSolutionPaths(tq)
 	if err != nil {
 		return err
 	}
-	if err = getSolutionCodes(tq, paths); err != nil {
+	mlog.Printf("solutions total: %d", len(paths))
+	count := 0
+	mx := sync.Mutex{}
+	if err = getSolutionCodes(tq, paths, func(uuid string) {
+		mx.Lock()
+		count++
+		c := count
+		mx.Unlock()
+		mlog.Printf("downloaded %s: %4d / %4d - %5.1f%%",
+			uuid, c, len(paths), float32(c)/float32(len(paths))*100)
+	}); err != nil {
 		return err
 	}
-	mlog.Printf("%d solutions downloaded", len(paths))
 	return nil
 }
 
-func cleanCmd(_ chan<- task) error {
+func cleanCmd(_ chan<- task, args []string) error {
+	if len(args) != 0 {
+		return errInvalidUsage
+	}
 	cp := makePath()
 	if err := os.RemoveAll(cp); err != nil {
 		return err
@@ -295,7 +316,7 @@ func getSolutionPaths(tq chan<- task) (paths pathMap, err error) {
 	return paths, nil
 }
 
-func getSolutionCodes(tq chan<- task, paths pathMap) error {
+func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid string)) error {
 	storePath := makePath()
 	if err := os.MkdirAll(storePath, 0700); err != nil {
 		return err
@@ -335,10 +356,12 @@ func getSolutionCodes(tq chan<- task, paths pathMap) error {
 				return
 			}
 			// store solution code
-			fp := makePath(uuidRE.FindString(path) + ".go")
+			uuid := uuidRE.FindString(path)
+			fp := makePath(uuid + ".go")
 			if err := ioutil.WriteFile(fp, []byte(extractSolutionCode(solutionPage)), 0600); err != nil {
 				mlog.Printf("write of %s failed: %v", fp, err)
 			}
+			got(uuid)
 		}
 	}
 
