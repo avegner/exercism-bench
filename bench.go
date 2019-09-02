@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -10,14 +11,31 @@ import (
 )
 
 var (
-	benchNameRE  = regexp.MustCompile("Benchmark([[:alnum:]]|_)+")
-	benchStatsRE = regexp.MustCompile(`[[:digit:]]+ ns/op\s+[[:digit:]]+ B/op\s+[[:digit:]]+ allocs/op`)
+	benchNameRE       = regexp.MustCompile("Benchmark([[:alnum:]]|_)+")
+	benchTimeRE       = regexp.MustCompile("[[:digit:]]+(.[[:digit:]]+)? ns/op")
+	benchThroughputRE = regexp.MustCompile("[[:digit:]]+(.[[:digit:]]+)? MB/s")
+	benchMemRE        = regexp.MustCompile(`[[:digit:]]+ B/op\s+[[:digit:]]+ allocs/op`)
+	benchStatsRE      = regexp.MustCompile(
+		fmt.Sprintf("%s(-[[:digit:]]+)?\\s+[[:digit:]]+\\s+%s\\s+(%s\\s+)?(%s)?",
+			benchNameRE, benchTimeRE, benchThroughputRE, benchMemRE))
 )
 
 type benchStats struct {
-	time   uint // ns
-	mem    uint // B
-	allocs uint
+	time       float64 // ns
+	throughput float64 // MB
+	mem        int     // B
+	allocs     int
+}
+
+func (st *benchStats) String() string {
+	s := fmt.Sprintf("%15.1f ns", st.time)
+	if st.throughput != -1 {
+		s += fmt.Sprintf(" %18.1f MB/s", st.throughput)
+	}
+	if st.mem != -1 && st.allocs != -1 {
+		s += fmt.Sprintf(" %15d B mem %15d allocs", st.mem, st.allocs)
+	}
+	return s
 }
 
 type solutionStats struct {
@@ -32,11 +50,16 @@ func sortStatsByBench(sstats []*solutionStats, benchName string) {
 		lh, rh := sstats[i].benchs[benchName], sstats[j].benchs[benchName]
 		return lh.time < rh.time ||
 			(lh.time == rh.time &&
+				lh.throughput < rh.throughput) ||
+			(lh.time == rh.time &&
+				lh.throughput == rh.throughput &&
 				lh.mem < rh.mem) ||
 			(lh.time == rh.time &&
+				lh.throughput == rh.throughput &&
 				lh.mem == rh.mem &&
 				lh.allocs < rh.allocs) ||
 			(lh.time == rh.time &&
+				lh.throughput == rh.throughput &&
 				lh.mem == rh.mem &&
 				lh.allocs == rh.allocs &&
 				sstats[i].size < sstats[j].size)
@@ -68,29 +91,39 @@ func getBenchNames(testSuitePath string) (bnames []string, err error) {
 }
 
 // runBench runs benchmarks matching pattern in a given dir.
-func runBench(dirPath, pattern string, arg ...string) (bstats map[string]*benchStats, err error) {
+func runBench(dirPath, pattern string) (bstats map[string]*benchStats, err error) {
 	// default pattern
 	if pattern == "" {
 		pattern = "."
 	}
 	// run benchmarks with tests
-	out, err := runCmd("go", dirPath, append([]string{"test", "-bench", pattern, "-benchmem"}, arg...)...)
+	out, err := runCmd("go", dirPath, "test", "-bench", pattern, "-benchmem")
 	if err != nil {
 		return
 	}
 	// extract stats
-	names := benchNameRE.FindAllString(out, -1)
-	stats := benchStatsRE.FindAllString(out, -1)
-	if len(names) != len(stats) {
-		panic("len(names) != len(stats)")
+	lines := benchStatsRE.FindAllString(out, -1)
+	if len(lines) == 0 {
+		err = errors.New("no benchmarks")
+		return
 	}
-	bstats = make(map[string]*benchStats, len(names))
-	for i, stat := range stats {
-		st := &benchStats{}
-		if _, err = fmt.Sscanf(stat, "%d ns/op %d B/op %d allocs/op", &st.time, &st.mem, &st.allocs); err != nil {
-			return
+	bstats = make(map[string]*benchStats, len(lines))
+	for _, l := range lines {
+		st := &benchStats{
+			throughput: -1,
+			mem:        -1,
+			allocs:     -1,
 		}
-		bstats[names[i]] = st
+		name := benchNameRE.FindString(l)
+		time := benchTimeRE.FindString(l)
+		_, _ = fmt.Sscanf(time, "%f ns/op", &st.time)
+		if throughput := benchThroughputRE.FindString(l); throughput != "" {
+			_, _ = fmt.Sscanf(throughput, "%f MB/s", &st.throughput)
+		}
+		if mem := benchMemRE.FindString(l); mem != "" {
+			_, _ = fmt.Sscanf(mem, "%d B/op %d allocs/op", &st.mem, &st.allocs)
+		}
+		bstats[name] = st
 	}
 	return bstats, nil
 }

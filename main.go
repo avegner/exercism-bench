@@ -55,7 +55,7 @@ Commands:
   	calculate total number of published solutions
   download
   	download published solutions
-  bench [go-test-flag...]
+  bench
   	bench downloaded solutions
   clean
   	remove downloaded solutions
@@ -132,6 +132,9 @@ func totalCmd(tq chan<- task, args []string) error {
 }
 
 func benchCmd(tq chan<- task, args []string) error {
+	if len(args) != 0 {
+		return errInvalidUsage
+	}
 	// walk through all solutions
 	solutionsPath := makePath()
 	// get benchmark names
@@ -183,7 +186,7 @@ func benchCmd(tq chan<- task, args []string) error {
 				return
 			}
 			// run bench
-			bstats, err := runBench(tmp, ".", args...)
+			bstats, err := runBench(tmp, ".")
 			if err != nil {
 				mlog.Printf("%s: %v", fn, err)
 				return
@@ -215,12 +218,12 @@ func benchCmd(tq chan<- task, args []string) error {
 	// print stats in sorted way
 	mlog.Println()
 	for _, bn := range benchs {
-		sortStatsByBench(sstats, bn)
 		mlog.Printf("------------------------------ %s ------------------------------", bn)
 		mlog.Println()
+		sortStatsByBench(sstats, bn)
 		for i, st := range sstats {
-			mlog.Printf("[%4d] %s: %9d ns, %9d B mem, %9d allocs, %9d symbols",
-				i, st.name, st.benchs[bn].time, st.benchs[bn].mem, st.benchs[bn].allocs, st.size)
+			mlog.Printf("[%5d] %s: %s %15d symbols",
+				i, st.name, st.benchs[bn], st.size)
 		}
 		mlog.Println()
 	}
@@ -244,7 +247,7 @@ func downloadCmd(tq chan<- task, args []string) error {
 		count++
 		c := count
 		mx.Unlock()
-		mlog.Printf("downloaded %s: %4d / %4d - %5.1f%%",
+		mlog.Printf("downloaded %s: %5d / %5d - %5.1f%%",
 			uuid, c, len(paths), float32(c)/float32(len(paths))*100)
 	}); err != nil {
 		return err
@@ -321,7 +324,6 @@ func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid string)) erro
 	if err := os.MkdirAll(storePath, 0700); err != nil {
 		return err
 	}
-
 	// get test suite
 	for path := range paths {
 		solutionPage, solutionURL, err := getContent(path)
