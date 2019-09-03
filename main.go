@@ -149,13 +149,17 @@ func benchCmd(tq chan<- task, args []string) error {
 	}
 	mlog.Println()
 	// run all benches in test suite for all solutions
-	wg := sync.WaitGroup{}
-	sstats := []*solutionStats{}
-	mx := sync.Mutex{}
 	fis, err := ioutil.ReadDir(makePath())
 	if err != nil {
 		return err
 	}
+	// TODO: replace len(fis) - 1 with precise count of solutions
+	stotal := len(fis) - 1
+	mlog.Printf("solutions total: %d", stotal)
+	mlog.Println()
+	wg := sync.WaitGroup{}
+	sstats := []*solutionStats{}
+	mx := sync.Mutex{}
 	for _, fi := range fis {
 		if !regular(fi) {
 			continue
@@ -185,13 +189,13 @@ func benchCmd(tq chan<- task, args []string) error {
 			// run bench
 			bstats, err := runBench(tmp, ".")
 			if err != nil {
-				mlog.Printf("%s: %v", sn, err)
+				mlog.Printf("benchmarking of %s failed: %v", sn, err)
 				return
 			}
 			// prepare stats
 			sz, err := getCodeSize(dpath)
 			if err != nil {
-				mlog.Printf("%s: %v", sn, err)
+				mlog.Printf("benchmarking of %s failed: %v", sn, err)
 				return
 			}
 			st := &solutionStats{
@@ -201,9 +205,11 @@ func benchCmd(tq chan<- task, args []string) error {
 			}
 			mx.Lock()
 			sstats = append(sstats, st)
+			count := len(sstats)
 			mx.Unlock()
 			// progress
-			mlog.Printf("%s: ok", st.name)
+			mlog.Printf("benchmarked %s: %5d / %5d - %5.1f%%",
+				st.name, count, stotal, float32(count)/float32(stotal)*100)
 		}
 	}
 	// wait all tasks
