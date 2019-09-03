@@ -28,16 +28,18 @@ func copyFile(srcPath, destPath string) error {
 // copyFiles copies all files from srcDir to destDir.
 // All nested dirs are ignored.
 func copyFiles(srcDir, destDir string) error {
-	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	files, err := ioutil.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if f.IsDir() {
+			continue
+		}
+		n := f.Name()
+		if err = copyFile(filepath.Join(srcDir, n), filepath.Join(destDir, n)); err != nil {
 			return err
 		}
-		if info.IsDir() {
-			if path == srcDir {
-				return nil
-			}
-			return filepath.SkipDir
-		}
-		return copyFile(path, filepath.Join(destDir, filepath.Base(path)))
-	})
+	}
+	return nil
 }
