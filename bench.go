@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -68,26 +67,23 @@ func sortStatsByBench(sstats []*solutionStats, benchName string) {
 
 // getBenchNames looks for benchmark names in test suite files.
 // All nested dirs in test suite dir are ignored.
-func getBenchNames(testSuitePath string) (bnames []string, err error) {
-	err = filepath.Walk(testSuitePath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			if path == testSuitePath {
-				return nil
-			}
-			return filepath.SkipDir
+func getBenchNames(testSuitePath string) (names []string, err error) {
+	fis, err := ioutil.ReadDir(testSuitePath)
+	if err != nil {
+		return nil, err
+	}
+	for _, fi := range fis {
+		if !regular(fi) {
+			continue
 		}
 		// read each test file
-		bs, err := ioutil.ReadFile(path)
+		bs, err := ioutil.ReadFile(filepath.Join(testSuitePath, fi.Name()))
 		if err != nil {
-			return err
+			return nil, err
 		}
-		bnames = append(bnames, benchNameRE.FindAllString(string(bs), -1)...)
-		return nil
-	})
-	return
+		names = append(names, benchNameRE.FindAllString(string(bs), -1)...)
+	}
+	return names, nil
 }
 
 // runBench runs benchmarks matching pattern in a given dir.

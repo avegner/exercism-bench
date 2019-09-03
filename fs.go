@@ -14,7 +14,7 @@ func copyFile(srcPath, destPath string) error {
 	if err != nil {
 		return err
 	}
-	if fi.Mode()&os.ModeType != 0 {
+	if !regular(fi) {
 		return errors.New("not a regular file")
 	}
 	// copy data
@@ -28,18 +28,22 @@ func copyFile(srcPath, destPath string) error {
 // copyFiles copies all files from srcDir to destDir.
 // All nested dirs are ignored.
 func copyFiles(srcDir, destDir string) error {
-	files, err := ioutil.ReadDir(srcDir)
+	fis, err := ioutil.ReadDir(srcDir)
 	if err != nil {
 		return err
 	}
-	for _, f := range files {
-		if f.IsDir() {
+	for _, fi := range fis {
+		if fi.IsDir() {
 			continue
 		}
-		n := f.Name()
+		n := fi.Name()
 		if err = copyFile(filepath.Join(srcDir, n), filepath.Join(destDir, n)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func regular(fi os.FileInfo) bool {
+	return fi.Mode()&os.ModeType == 0
 }
