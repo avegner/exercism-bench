@@ -2,10 +2,13 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"html"
 	"io/ioutil"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -13,6 +16,11 @@ import (
 const (
 	codeStartPattern = "<pre class='line-numbers solution-code'><code class='language-go'>"
 	codeEndPattern   = "</code></pre>"
+)
+
+var (
+	codeRE   = regexp.MustCompile(codeStartPattern + `(.|\s)+` + codeEndPattern)
+	authorRE = regexp.MustCompile("Avatar of ([[:word:]]|-)+")
 )
 
 type codeRange struct {
@@ -78,35 +86,16 @@ func getCodeSize(sourceFilePath string) (size uint, err error) {
 	return size, nil
 }
 
-func normalizeCode(content string) string {
-	rm := map[string]string{
-		"&amp;":  "&",
-		"&quot;": "\"",
-		"&lt;":   "<",
-		"&gt;":   ">",
-		"&#39;":  "'",
+func extractSolutionCode(s string) (code, author string, err error) {
+	if code = codeRE.FindString(s); code == "" {
+		return "", "", errors.New("no code")
 	}
-	for old, new := range rm {
-		content = strings.ReplaceAll(content, old, new)
+	if author = authorRE.FindString(s); author != "" {
+		_, _ = fmt.Sscanf(author, "Avatar of %s", &author)
+	} else {
+		author = "unknown"
 	}
-	return content
-}
-
-// TODO: refactor code extraction, decode html
-func extractSolutionCode(content string) string {
-	const noCode = "NO CODE"
-
-	ind := strings.Index(content, codeStartPattern)
-	if ind == -1 {
-		return noCode
-	}
-	content = content[ind+len(codeStartPattern):]
-	if ind = strings.Index(content, codeEndPattern); ind == -1 {
-		return noCode
-	}
-	content = content[:ind]
-
-	return normalizeCode(content)
+	return html.UnescapeString(code[len(codeStartPattern) : len(code)-len(codeEndPattern)]), author, nil
 }
 
 // TODO: refactor test suite extraction
@@ -143,7 +132,7 @@ func extractTestSuite(content string) (tsm map[string]string, err error) {
 
 		fn := content[fns+4 : fne]
 		code := content[cs:ce]
-		tsm[fn] = normalizeCode(code)
+		tsm[fn] = html.UnescapeString(code)
 
 		content = content[ce+12:]
 	}

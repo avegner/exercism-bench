@@ -34,12 +34,10 @@ var (
 )
 
 var (
-	uuidPattern            = "([[:xdigit:]][[:xdigit:]]){16}"
-	solutionPathRE         = regexp.MustCompile("solutions/" + uuidPattern)
-	uuidRE                 = regexp.MustCompile(uuidPattern)
-	decimalNumberPattern   = "[[:digit:]]+"
-	solutionGroupsNumberRE = regexp.MustCompile("solutions\\?page=" + decimalNumberPattern + "\">Last")
-	decimalNumberRE        = regexp.MustCompile(decimalNumberPattern)
+	uuidRE                 = regexp.MustCompile("([[:xdigit:]][[:xdigit:]]){16}")
+	solutionPathRE         = regexp.MustCompile("solutions/" + uuidRE.String())
+	decimalNumberRE        = regexp.MustCompile("[[:digit:]]+")
+	solutionGroupsNumberRE = regexp.MustCompile("solutions\\?page=" + decimalNumberRE.String() + "\">Last")
 )
 
 var errInvalidUsage = errors.New("invalid usage")
@@ -189,13 +187,13 @@ func benchCmd(tq chan<- task, args []string) error {
 			// run bench
 			bstats, err := runBench(tmp, ".")
 			if err != nil {
-				mlog.Printf("benchmarking of %s failed: %v", sn, err)
+				mlog.Printf("benchmarking of %64s failed: %v", sn, err)
 				return
 			}
 			// prepare stats
 			sz, err := getCodeSize(dpath)
 			if err != nil {
-				mlog.Printf("benchmarking of %s failed: %v", sn, err)
+				mlog.Printf("benchmarking of %64s failed: %v", sn, err)
 				return
 			}
 			st := &solutionStats{
@@ -208,7 +206,7 @@ func benchCmd(tq chan<- task, args []string) error {
 			count := len(sstats)
 			mx.Unlock()
 			// progress
-			mlog.Printf("benchmarked %s: %5d / %5d - %5.1f%%",
+			mlog.Printf("benchmarked %64s: %5d / %5d - %5.1f%%",
 				st.name, count, stotal, float32(count)/float32(stotal)*100)
 		}
 	}
@@ -221,7 +219,7 @@ func benchCmd(tq chan<- task, args []string) error {
 		mlog.Println()
 		sortStatsByBench(sstats, bn)
 		for i, st := range sstats {
-			mlog.Printf("[%5d] %s: %s %15d symbols",
+			mlog.Printf("[%5d] %64s: %s %15d symbols",
 				i, st.name, st.benchs[bn], st.size)
 		}
 		mlog.Println()
@@ -350,10 +348,16 @@ func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid string)) erro
 				mlog.Printf("download of %s failed: %v", solutionURL, err)
 				return
 			}
+			// extract solution code
+			code, author, err := extractSolutionCode(solutionPage)
+			if err != nil {
+				mlog.Printf("code extraction for %s failed: %v", solutionURL, err)
+				return
+			}
 			// store solution code
 			uuid := uuidRE.FindString(path)
-			fp := makePath(uuid + ".go")
-			if err := ioutil.WriteFile(fp, []byte(extractSolutionCode(solutionPage)), 0600); err != nil {
+			fp := makePath(uuid + "-" + author + ".go")
+			if err := ioutil.WriteFile(fp, []byte(code), 0600); err != nil {
 				mlog.Printf("write of %s failed: %v", fp, err)
 			}
 			got(uuid)
