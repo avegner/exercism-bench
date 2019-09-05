@@ -187,13 +187,13 @@ func benchCmd(tq chan<- task, args []string) error {
 			// run bench
 			bstats, err := runBench(tmp, ".")
 			if err != nil {
-				mlog.Printf("benchmarking of %64s failed: %v", sn, err)
+				mlog.Printf("benchmarking of %s failed: %v", sn, err)
 				return
 			}
 			// prepare stats
 			sz, err := getCodeSize(dpath)
 			if err != nil {
-				mlog.Printf("benchmarking of %64s failed: %v", sn, err)
+				mlog.Printf("benchmarking of %s failed: %v", sn, err)
 				return
 			}
 			st := &solutionStats{
@@ -206,7 +206,7 @@ func benchCmd(tq chan<- task, args []string) error {
 			count := len(sstats)
 			mx.Unlock()
 			// progress
-			mlog.Printf("benchmarked %64s: %5d / %5d - %5.1f%%",
+			mlog.Printf("benchmarked %-64s: %5d / %5d - %5.1f%%",
 				st.name, count, stotal, float32(count)/float32(stotal)*100)
 		}
 	}
@@ -219,8 +219,8 @@ func benchCmd(tq chan<- task, args []string) error {
 		mlog.Println()
 		sortStatsByBench(sstats, bn)
 		for i, st := range sstats {
-			mlog.Printf("[%5d] %64s: %s %15d symbols",
-				i, st.name, st.benchs[bn], st.size)
+			mlog.Printf("[%5d] %-64s: %s %15d symbols",
+				i+1, st.name, st.benchs[bn], st.size)
 		}
 		mlog.Println()
 	}
@@ -236,15 +236,16 @@ func downloadCmd(tq chan<- task, args []string) error {
 		return err
 	}
 	mlog.Printf("solutions total: %d", len(paths))
+	mlog.Println()
 	count := 0
 	mx := sync.Mutex{}
-	if err = getSolutionCodes(tq, paths, func(uuid string) {
+	if err = getSolutionCodes(tq, paths, func(uuid, author string) {
 		mx.Lock()
 		count++
 		c := count
 		mx.Unlock()
-		mlog.Printf("downloaded %s: %5d / %5d - %5.1f%%",
-			uuid, c, len(paths), float32(c)/float32(len(paths))*100)
+		mlog.Printf("downloaded %s of %-24s: %5d / %5d - %5.1f%%",
+			uuid, author, c, len(paths), float32(c)/float32(len(paths))*100)
 	}); err != nil {
 		return err
 	}
@@ -312,7 +313,7 @@ func getSolutionPaths(tq chan<- task) (paths pathMap, err error) {
 	return paths, nil
 }
 
-func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid string)) error {
+func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid, author string)) error {
 	if err := os.MkdirAll(makePath(), 0700); err != nil {
 		return err
 	}
@@ -360,7 +361,7 @@ func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid string)) erro
 			if err := ioutil.WriteFile(fp, []byte(code), 0600); err != nil {
 				mlog.Printf("write of %s failed: %v", fp, err)
 			}
-			got(uuid)
+			got(uuid, author)
 		}
 	}
 	// wait all tasks
