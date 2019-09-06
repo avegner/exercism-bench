@@ -7,13 +7,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 )
 
 var (
 	benchNameRE       = regexp.MustCompile("Benchmark([[:alnum:]]|_)+")
-	benchTimeRE       = regexp.MustCompile("[[:digit:]]+(.[[:digit:]]+)? ns/op")
-	benchThroughputRE = regexp.MustCompile("[[:digit:]]+(.[[:digit:]]+)? MB/s")
-	benchMemRE        = regexp.MustCompile(`[[:digit:]]+ B/op\s+[[:digit:]]+ allocs/op`)
+	benchTimeRE       = regexp.MustCompile("([[:digit:]]+(.[[:digit:]]+)?) ns/op")
+	benchThroughputRE = regexp.MustCompile("([[:digit:]]+(.[[:digit:]]+)?) MB/s")
+	benchMemRE        = regexp.MustCompile(`([[:digit:]]+) B/op\s+([[:digit:]]+) allocs/op`)
 	benchStatsRE      = regexp.MustCompile(
 		fmt.Sprintf("%s(-[[:digit:]]+)?\\s+[[:digit:]]+\\s+%s\\s+(%s\\s+)?(%s)?",
 			benchNameRE, benchTimeRE, benchThroughputRE, benchMemRE))
@@ -22,8 +23,8 @@ var (
 type benchStats struct {
 	time       float64 // ns
 	throughput float64 // MB
-	mem        int     // B
-	allocs     int
+	mem        int64   // B
+	allocs     int64
 }
 
 func (st *benchStats) String() string {
@@ -110,14 +111,34 @@ func runBench(dirPath, pattern string) (bstats map[string]*benchStats, err error
 			mem:        -1,
 			allocs:     -1,
 		}
+		// benchmark name
 		name := benchNameRE.FindString(l)
-		time := benchTimeRE.FindString(l)
-		_, _ = fmt.Sscanf(time, "%f ns/op", &st.time)
-		if throughput := benchThroughputRE.FindString(l); throughput != "" {
-			_, _ = fmt.Sscanf(throughput, "%f MB/s", &st.throughput)
+		// time
+		if ms := benchTimeRE.FindStringSubmatch(l); ms != nil {
+			st.time, err = strconv.ParseFloat(ms[1], 64)
+			if err != nil {
+				return
+			}
+		} else {
+			panic("no time data")
 		}
-		if mem := benchMemRE.FindString(l); mem != "" {
-			_, _ = fmt.Sscanf(mem, "%d B/op %d allocs/op", &st.mem, &st.allocs)
+		// optional throughput
+		if ms := benchThroughputRE.FindStringSubmatch(l); ms != nil {
+			st.throughput, err = strconv.ParseFloat(ms[1], 64)
+			if err != nil {
+				return
+			}
+		}
+		// optional mem
+		if ms := benchMemRE.FindStringSubmatch(l); ms != nil {
+			st.mem, err = strconv.ParseInt(ms[1], 10, 64)
+			if err != nil {
+				return
+			}
+			st.allocs, err = strconv.ParseInt(ms[2], 10, 64)
+			if err != nil {
+				return
+			}
 		}
 		bstats[name] = st
 	}
