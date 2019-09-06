@@ -325,7 +325,10 @@ func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid, author strin
 			return err
 		}
 		// store test suite
-		ts, _ := extractTestSuite(solutionPage)
+		ts, err := extractTestSuite(solutionPage)
+		if err != nil {
+			return err
+		}
 		tsp := makePath("test-suite")
 		_ = os.Mkdir(tsp, 0700)
 		for fn, fc := range ts {
