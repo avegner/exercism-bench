@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -14,13 +13,24 @@ import (
 )
 
 const (
-	codeStartPattern = "<pre class='line-numbers solution-code'><code class='language-go'>"
-	codeEndPattern   = "</code></pre>"
+	testSuiteStartPattern    = "<div class='pane pane-2 test-suite'>"
+	testSuiteEndPattern      = "</div>"
+	codeStartPattern         = "<code class='language-go'>"
+	codeEndPattern           = "</code>"
+	solutionCodeStartPattern = "<pre class='line-numbers solution-code'>" + codeStartPattern
+	solutionCodeEndPattern   = codeEndPattern + "</pre>"
+	testFileNameStartPattern = "<h3>"
+	testFileNameEndPattern   = "</h3>"
 )
 
 var (
-	codeRE   = regexp.MustCompile(codeStartPattern + `(.|\s)+` + codeEndPattern)
-	authorRE = regexp.MustCompile("Avatar of ([[:word:]]|-)+")
+	authorRE = regexp.MustCompile("Avatar of (([[:word:]]|-)+)")
+)
+
+var (
+	errNoSolutionCode = errors.New("no solution code")
+	errNoAuthorName   = errors.New("no author name")
+	errNoTestSuite    = errors.New("no test suite")
 )
 
 type codeRange struct {
@@ -86,56 +96,71 @@ func getCodeSize(sourceFilePath string) (size uint, err error) {
 	return size, nil
 }
 
-func extractSolutionCode(s string) (code, author string, err error) {
-	if code = codeRE.FindString(s); code == "" {
-		return "", "", errors.New("no code")
+func extractSolutionCode(solutionPage string) (code, author string, err error) {
+	// extract author name
+	ms := authorRE.FindStringSubmatch(solutionPage)
+	if ms == nil {
+		return "", "", errNoAuthorName
 	}
-	if author = authorRE.FindString(s); author != "" {
-		_, _ = fmt.Sscanf(author, "Avatar of %s", &author)
-	} else {
-		author = "unknown"
+	author = ms[1]
+	// extract code
+	sind := strings.Index(solutionPage, solutionCodeStartPattern)
+	if sind == -1 {
+		return "", "", errNoSolutionCode
 	}
-	return html.UnescapeString(code[len(codeStartPattern) : len(code)-len(codeEndPattern)]), author, nil
+	sind += len(solutionCodeStartPattern)
+	eind := strings.Index(solutionPage[sind:], solutionCodeEndPattern)
+	if eind == -1 {
+		return "", "", errNoSolutionCode
+	}
+	code = html.UnescapeString(solutionPage[sind : sind+eind])
+	return code, author, nil
 }
 
-// TODO: refactor test suite extraction
-func extractTestSuite(content string) (tsm map[string]string, err error) {
-	sind := strings.Index(content, "<div class='pane pane-2 test-suite'>")
+func extractTestSuite(solutionPage string) (suite map[string]string, err error) {
+	// locate test suite
+	sind := strings.Index(solutionPage, testSuiteStartPattern)
 	if sind == -1 {
-		return nil, errors.New("no suite start")
+		return nil, errNoTestSuite
 	}
-	eind := strings.Index(content[sind:], "</div>")
+	sind += len(testSuiteStartPattern)
+	eind := strings.Index(solutionPage[sind:], testSuiteEndPattern)
 	if eind == -1 {
-		return nil, errors.New("no suite end")
+		return nil, errNoTestSuite
 	}
-	content = content[sind : sind+eind]
-	tsm = make(map[string]string)
-
+	ts := solutionPage[sind : sind+eind]
+	// extract test files
+	suite = make(map[string]string)
 	for {
-		fns := strings.Index(content, "<h3>")
-		if fns == -1 {
+		// locate file name
+		sind = strings.Index(ts, testFileNameStartPattern)
+		if sind == -1 {
+			if len(suite) == 0 {
+				return nil, errNoTestSuite
+			}
 			break
 		}
-
-		fne := strings.Index(content, "</h3>")
-		if fne == -1 {
-			return nil, errors.New("no test file name end")
+		sind += len(testFileNameStartPattern)
+		eind = strings.Index(ts[sind:], testFileNameEndPattern)
+		if eind == -1 {
+			return nil, errNoTestSuite
 		}
-		cs := strings.Index(content, "package")
-		if cs == -1 {
-			return nil, errors.New("no test file start")
+		name := ts[sind : sind+eind]
+		ts = ts[sind+eind+len(testSuiteEndPattern):]
+		// locate code
+		sind = strings.Index(ts, codeStartPattern)
+		if sind == -1 {
+			return nil, errNoTestSuite
 		}
-		ce := strings.Index(content, "</code></pre>")
-		if ce == -1 {
-			return nil, errors.New("no test file end")
+		sind += len(codeStartPattern)
+		eind = strings.Index(ts[sind:], codeEndPattern)
+		if eind == -1 {
+			return nil, errNoTestSuite
 		}
-
-		fn := content[fns+4 : fne]
-		code := content[cs:ce]
-		tsm[fn] = html.UnescapeString(code)
-
-		content = content[ce+12:]
+		code := html.UnescapeString(ts[sind : sind+eind])
+		ts = ts[sind+eind+len(codeEndPattern):]
+		// fill in suite
+		suite[name] = code
 	}
-
-	return tsm, nil
+	return suite, nil
 }

@@ -244,7 +244,7 @@ func downloadCmd(tq chan<- task, args []string) error {
 		count++
 		c := count
 		mx.Unlock()
-		mlog.Printf("downloaded %s of %-24s: %5d / %5d - %5.1f%%",
+		mlog.Printf("downloaded %s of %-32s: %5d / %5d - %5.1f%%",
 			uuid, author, c, len(paths), float32(c)/float32(len(paths))*100)
 	}); err != nil {
 		return err
