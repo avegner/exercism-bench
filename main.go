@@ -27,10 +27,10 @@ var commands = map[string]func(tq chan<- task, args []string) error{
 }
 
 var (
-	exerciseFlag    = ""
+	exercise    = ""
 	downloadDirFlag = "./solutions"
-	concurrencyFlag = true
-	threadsFlag     = runtime.GOMAXPROCS(0)
+	concurrencyFlag = false
+	maxProcsFlag     = runtime.GOMAXPROCS(0)
 )
 
 var (
@@ -46,11 +46,11 @@ var mlog = log.New(os.Stderr, "", 0)
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), `Usage: %s -exercise=<name> [opt-flag...] COMMAND
+		fmt.Fprintf(flag.CommandLine.Output(), `Usage: %s [flag...] <exercise-name> <command>
 
 Commands:
   total
-  	calculate total number of published solutions
+  	calculate number of published solutions
   download
   	download published solutions
   bench
@@ -62,10 +62,9 @@ Flags:
 `, filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
 	}
-	flag.StringVar(&exerciseFlag, "exercise", exerciseFlag, "exercise name")
-	flag.StringVar(&downloadDirFlag, "download-dir", downloadDirFlag, "directory for downloaded solutions")
-	flag.BoolVar(&concurrencyFlag, "concurrency", concurrencyFlag, "enable concurrency")
-	flag.IntVar(&threadsFlag, "threads", threadsFlag, "number of threads")
+	flag.StringVar(&downloadDirFlag, "d", downloadDirFlag, "directory to store solutions")
+	flag.BoolVar(&concurrencyFlag, "c", concurrencyFlag, "enable concurrency")
+	flag.IntVar(&maxProcsFlag, "mp", maxProcsFlag, "GOMAXPROCS value to set")
 	flag.Parse()
 
 	if err := run(flag.Args()); err != nil {
@@ -79,21 +78,19 @@ Flags:
 }
 
 func run(args []string) (err error) {
-	if len(args) < 1 {
+	if len(args) < 2 {
 		return errInvalidUsage
 	}
-	if exerciseFlag == "" {
-		return errInvalidUsage
-	}
-	cmd, ok := commands[args[0]]
+	exercise = args[0]
+	cmd, ok := commands[args[1]]
 	if !ok {
 		return errInvalidUsage
 	}
 
 	// create pool of general purpose workers
 	procs := 1
+	runtime.GOMAXPROCS(maxProcsFlag)
 	if concurrencyFlag {
-		runtime.GOMAXPROCS(threadsFlag)
 		procs = runtime.GOMAXPROCS(0)
 	}
 	tq := make(chan task, procs)
@@ -102,7 +99,7 @@ func run(args []string) (err error) {
 		go worker(tq)
 	}
 
-	return cmd(tq, args[1:])
+	return cmd(tq, args[2:])
 }
 
 type task func()
@@ -265,7 +262,7 @@ func cleanCmd(_ chan<- task, args []string) error {
 }
 
 func makePath(path ...string) string {
-	return filepath.Join(append([]string{downloadDirFlag, trackLang, exerciseFlag}, path...)...)
+	return filepath.Join(append([]string{downloadDirFlag, trackLang, exercise}, path...)...)
 }
 
 type pathMap map[string]struct{}

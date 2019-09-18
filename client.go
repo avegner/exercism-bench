@@ -14,7 +14,7 @@ var httpClient = http.Client{
 
 //nolint:gosec
 func getContent(path string) (content string, url string, err error) {
-	url = strings.Join([]string{exercismAddr, "tracks", trackLang, "exercises", exerciseFlag, path}, "/")
+	url = strings.Join([]string{exercismAddr, "tracks", trackLang, "exercises", exercise, path}, "/")
 
 	resp, err := httpClient.Get(url)
 	if err != nil {
