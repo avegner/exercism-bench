@@ -27,10 +27,10 @@ var commands = map[string]func(tq chan<- task, args []string) error{
 }
 
 var (
-	exercise    = ""
+	exercise        = ""
 	downloadDirFlag = "./solutions"
 	concurrencyFlag = false
-	maxProcsFlag     = runtime.GOMAXPROCS(0)
+	maxProcsFlag    = runtime.GOMAXPROCS(0)
 )
 
 var (
@@ -131,7 +131,7 @@ func benchCmd(tq chan<- task, args []string) error {
 		return errInvalidUsage
 	}
 	// get benchmark names
-	benchs, err := getBenchNames(makePath("test-suite"))
+	benchs, err := getBenchNames(solutionsDir("test-suite"))
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func benchCmd(tq chan<- task, args []string) error {
 	}
 	mlog.Println()
 	// run all benches in test suite for all solutions
-	fis, err := ioutil.ReadDir(makePath())
+	fis, err := ioutil.ReadDir(solutionsDir())
 	if err != nil {
 		return err
 	}
@@ -173,11 +173,11 @@ func benchCmd(tq chan<- task, args []string) error {
 			defer os.RemoveAll(tmp)
 			// copy all required files to temp dir
 			dpath := filepath.Join(tmp, sn)
-			if err = copyFile(makePath(sn), dpath); err != nil {
+			if err = copyFile(solutionsDir(sn), dpath); err != nil {
 				mlog.Printf("copy file error: %v", err)
 				return
 			}
-			if err = copyFiles(makePath("test-suite"), tmp); err != nil {
+			if err = copyFiles(solutionsDir("test-suite"), tmp); err != nil {
 				mlog.Printf("copy test suite files error: %v", err)
 				return
 			}
@@ -253,7 +253,7 @@ func cleanCmd(_ chan<- task, args []string) error {
 	if len(args) != 0 {
 		return errInvalidUsage
 	}
-	cp := makePath()
+	cp := solutionsDir()
 	if err := os.RemoveAll(cp); err != nil {
 		return err
 	}
@@ -261,7 +261,7 @@ func cleanCmd(_ chan<- task, args []string) error {
 	return nil
 }
 
-func makePath(path ...string) string {
+func solutionsDir(path ...string) string {
 	return filepath.Join(append([]string{downloadDirFlag, trackLang, exercise}, path...)...)
 }
 
@@ -311,7 +311,7 @@ func getSolutionPaths(tq chan<- task) (paths pathMap, err error) {
 }
 
 func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid, author string)) error {
-	if err := os.MkdirAll(makePath(), 0700); err != nil {
+	if err := os.MkdirAll(solutionsDir(), 0700); err != nil {
 		return err
 	}
 	// get test suite
@@ -326,7 +326,7 @@ func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid, author strin
 		if err != nil {
 			return err
 		}
-		tsp := makePath("test-suite")
+		tsp := solutionsDir("test-suite")
 		_ = os.Mkdir(tsp, 0700)
 		for fn, fc := range ts {
 			fp := filepath.Join(tsp, fn)
@@ -357,7 +357,7 @@ func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid, author strin
 			}
 			// store solution code
 			uuid := uuidRE.FindString(path)
-			fp := makePath(uuid + "-" + author + ".go")
+			fp := solutionsDir(uuid + "-" + author + ".go")
 			if err := ioutil.WriteFile(fp, []byte(code), 0600); err != nil {
 				mlog.Printf("write of %s failed: %v", fp, err)
 			}
