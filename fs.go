@@ -17,6 +17,7 @@ func copyFile(srcPath, destPath string) error {
 	if !regular(fi) {
 		return errors.New("not a regular file")
 	}
+
 	// copy data
 	bs, err := ioutil.ReadFile(srcPath)
 	if err != nil {
@@ -32,6 +33,7 @@ func copyFiles(srcDir, destDir string) error {
 	if err != nil {
 		return err
 	}
+
 	for _, fi := range fis {
 		if fi.IsDir() {
 			continue

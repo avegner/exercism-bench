@@ -62,16 +62,19 @@ func getCodeSize(sourceFilePath string) (size uint, err error) {
 	if err != nil {
 		return
 	}
+
 	// exclude comments and ignore white spaces in string and char literals
 	var (
 		exclude, ignore codeRanges
 	)
+
 	// parse source code
 	fs := token.NewFileSet()
 	f, err := parser.ParseFile(fs, sourceFilePath, bs, parser.ParseComments)
 	if err != nil {
 		return
 	}
+
 	// find all comments, string and char literals
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch v := n.(type) {
@@ -84,6 +87,7 @@ func getCodeSize(sourceFilePath string) (size uint, err error) {
 		}
 		return true
 	})
+
 	// count only relevant code symbols
 	for i, r := range string(bs) {
 		if exclude.include(i) {
@@ -103,6 +107,7 @@ func extractSolutionCode(solutionPage string) (code, author string, err error) {
 		return "", "", errNoAuthorName
 	}
 	author = ms[1]
+
 	// extract code
 	sind := strings.Index(solutionPage, solutionCodeStartPattern)
 	if sind == -1 {
@@ -114,6 +119,7 @@ func extractSolutionCode(solutionPage string) (code, author string, err error) {
 		return "", "", errNoSolutionCode
 	}
 	code = html.UnescapeString(solutionPage[sind : sind+eind])
+
 	return code, author, nil
 }
 
@@ -129,6 +135,7 @@ func extractTestSuite(solutionPage string) (suite map[string]string, err error) 
 		return nil, errNoTestSuite
 	}
 	ts := solutionPage[sind : sind+eind]
+
 	// extract test files
 	suite = make(map[string]string)
 	for {
@@ -147,6 +154,7 @@ func extractTestSuite(solutionPage string) (suite map[string]string, err error) 
 		}
 		name := ts[sind : sind+eind]
 		ts = ts[sind+eind+len(testSuiteEndPattern):]
+
 		// locate code
 		sind = strings.Index(ts, codeStartPattern)
 		if sind == -1 {
@@ -159,8 +167,10 @@ func extractTestSuite(solutionPage string) (suite map[string]string, err error) 
 		}
 		code := html.UnescapeString(ts[sind : sind+eind])
 		ts = ts[sind+eind+len(codeEndPattern):]
+
 		// fill in suite
 		suite[name] = code
 	}
+
 	return suite, nil
 }

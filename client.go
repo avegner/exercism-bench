@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -13,10 +14,25 @@ var httpClient = http.Client{
 }
 
 //nolint:gosec
-func getContent(path string) (content string, url string, err error) {
-	url = strings.Join([]string{exercismAddr, "tracks", trackLang, "exercises", exercise, path}, "/")
+func getSolutionPage(uuid string, params map[string]string) (content string, urlv string, err error) {
+	// form URL
+	urlv = strings.Join([]string{exercismAddr, "tracks", trackLang, "exercises", exercise, "solutions", uuid}, "/")
+	// form params
+	if len(params) > 0 {
+		vs := url.Values{}
+		for k, v := range params {
+			vs.Add(k, v)
+		}
+		urlv += "?" + vs.Encode()
+	}
+	// create request
+	req, err := http.NewRequest("GET", urlv, nil)
+	if err != nil {
+		return
+	}
 
-	resp, err := httpClient.Get(url)
+	// do request
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return
 	}
@@ -31,5 +47,5 @@ func getContent(path string) (content string, url string, err error) {
 	if err != nil {
 		return
 	}
-	return string(bs), url, nil
+	return string(bs), urlv, nil
 }

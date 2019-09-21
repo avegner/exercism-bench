@@ -40,14 +40,14 @@ func (st *benchStats) String() string {
 
 type solutionStats struct {
 	name   string
-	benchs map[string]*benchStats
+	bstats map[string]*benchStats
 	size   uint // symbols except comments and white spaces
 }
 
 // sort sorts by time (the most important), mem, allocs and size (the least).
-func sortStatsByBench(sstats []*solutionStats, benchName string) {
+func sortSolutionStatsByBench(sstats []*solutionStats, benchName string) {
 	sort.SliceStable(sstats, func(i, j int) bool {
-		lh, rh := sstats[i].benchs[benchName], sstats[j].benchs[benchName]
+		lh, rh := sstats[i].bstats[benchName], sstats[j].bstats[benchName]
 		return lh.time < rh.time ||
 			(lh.time == rh.time &&
 				lh.throughput < rh.throughput) ||
@@ -73,6 +73,7 @@ func getBenchNames(testSuitePath string) (names []string, err error) {
 	if err != nil {
 		return nil, err
 	}
+
 	for _, fi := range fis {
 		if !regular(fi) {
 			continue
@@ -84,6 +85,7 @@ func getBenchNames(testSuitePath string) (names []string, err error) {
 		}
 		names = append(names, benchNameRE.FindAllString(string(bs), -1)...)
 	}
+
 	return names, nil
 }
 
@@ -93,11 +95,13 @@ func runBench(dirPath, pattern string) (bstats map[string]*benchStats, err error
 	if pattern == "" {
 		pattern = "."
 	}
+
 	// run benchmarks with tests
 	out, err := runCmd("go", dirPath, "test", "-bench", pattern, "-benchmem")
 	if err != nil {
 		return
 	}
+
 	// extract stats
 	lines := benchStatsRE.FindAllString(out, -1)
 	if len(lines) == 0 {
@@ -105,12 +109,14 @@ func runBench(dirPath, pattern string) (bstats map[string]*benchStats, err error
 		return
 	}
 	bstats = make(map[string]*benchStats, len(lines))
+
 	for _, l := range lines {
 		st := &benchStats{
 			throughput: -1,
 			mem:        -1,
 			allocs:     -1,
 		}
+
 		// benchmark name
 		name := benchNameRE.FindString(l)
 		// time
@@ -122,6 +128,7 @@ func runBench(dirPath, pattern string) (bstats map[string]*benchStats, err error
 		} else {
 			panic("no time data")
 		}
+
 		// optional throughput
 		if ms := benchThroughputRE.FindStringSubmatch(l); ms != nil {
 			st.throughput, err = strconv.ParseFloat(ms[1], 64)
@@ -129,6 +136,7 @@ func runBench(dirPath, pattern string) (bstats map[string]*benchStats, err error
 				return
 			}
 		}
+
 		// optional mem
 		if ms := benchMemRE.FindStringSubmatch(l); ms != nil {
 			st.mem, err = strconv.ParseInt(ms[1], 10, 64)
@@ -142,5 +150,6 @@ func runBench(dirPath, pattern string) (bstats map[string]*benchStats, err error
 		}
 		bstats[name] = st
 	}
+
 	return bstats, nil
 }

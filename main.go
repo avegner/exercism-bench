@@ -34,10 +34,8 @@ var (
 )
 
 var (
-	uuidRE                 = regexp.MustCompile("([[:xdigit:]][[:xdigit:]]){16}")
-	solutionPathRE         = regexp.MustCompile("solutions/" + uuidRE.String())
-	decimalNumberRE        = regexp.MustCompile("[[:digit:]]+")
-	solutionGroupsNumberRE = regexp.MustCompile("solutions\\?page=" + decimalNumberRE.String() + "\">Last")
+	solutionPathRE         = regexp.MustCompile("solutions/(([[:xdigit:]][[:xdigit:]]){16})")
+	solutionGroupsNumberRE = regexp.MustCompile(`solutions\?page=([[:digit:]]+)">Last`)
 )
 
 var errInvalidUsage = errors.New("invalid usage")
@@ -78,6 +76,7 @@ Flags:
 }
 
 func run(args []string) (err error) {
+	// check args
 	if len(args) < 2 {
 		return errInvalidUsage
 	}
@@ -87,18 +86,21 @@ func run(args []string) (err error) {
 		return errInvalidUsage
 	}
 
-	// create pool of general purpose workers
-	procs := 1
+	// determine task queue size
+	tqSize := 1
 	runtime.GOMAXPROCS(maxProcsFlag)
 	if concurrencyFlag {
-		procs = runtime.GOMAXPROCS(0)
+		tqSize = runtime.GOMAXPROCS(0)
 	}
-	tq := make(chan task, procs)
+
+	// create task queue and pool of general purpose workers
+	tq := make(chan task, tqSize)
 	defer close(tq)
-	for i := 0; i < procs; i++ {
+	for i := 0; i < tqSize; i++ {
 		go worker(tq)
 	}
 
+	// run a given command
 	return cmd(tq, args[2:])
 }
 
@@ -118,11 +120,13 @@ func totalCmd(tq chan<- task, args []string) error {
 	if len(args) != 0 {
 		return errInvalidUsage
 	}
-	paths, err := getSolutionPaths(tq)
+
+	uuids, err := getSolutionUUIDs(tq)
 	if err != nil {
 		return err
 	}
-	mlog.Printf("solutions total: %d", len(paths))
+	mlog.Printf("solutions total: %d", len(uuids))
+
 	return nil
 }
 
@@ -130,40 +134,52 @@ func benchCmd(tq chan<- task, args []string) error {
 	if len(args) != 0 {
 		return errInvalidUsage
 	}
+
 	// get benchmark names
-	benchs, err := getBenchNames(solutionsDir("test-suite"))
+	bnames, err := getBenchNames(solutionsDir("test-suite"))
 	if err != nil {
 		return err
 	}
-	if len(benchs) == 0 {
+	if len(bnames) == 0 {
 		return errors.New("found 0 benchmarks")
 	}
-	mlog.Printf("found %d benchmarks:", len(benchs))
-	for _, n := range benchs {
+	mlog.Printf("found %d benchmarks:", len(bnames))
+	for _, n := range bnames {
 		mlog.Printf("- %s", n)
 	}
 	mlog.Println()
-	// run all benches in test suite for all solutions
+
+	// get solutions total
 	fis, err := ioutil.ReadDir(solutionsDir())
 	if err != nil {
 		return err
 	}
-	// TODO: replace len(fis) - 1 with precise count of solutions
-	stotal := len(fis) - 1
-	mlog.Printf("solutions total: %d", stotal)
+	// TODO: replace with a precise count of solutions?
+	// by default all files except test suite dir are considered as a solution code
+	total := len(fis) - 1
+	if total <= 0 {
+		return errors.New("found 0 solutions")
+	}
+	mlog.Printf("solutions total: %d", total)
 	mlog.Println()
+
 	wg := sync.WaitGroup{}
 	sstats := []*solutionStats{}
 	mx := sync.Mutex{}
+
+	// run all benches in test suite for all solutions
 	for _, fi := range fis {
 		if !regular(fi) {
 			continue
 		}
-		// enqueue benchmarking task
+
+		// enqueue bench task
 		wg.Add(1)
-		sn := fi.Name()
+		fname := fi.Name()
+
 		tq <- func() {
 			defer wg.Done()
+
 			// create temp dir
 			tmp, err := ioutil.TempDir("", "")
 			if err != nil {
@@ -171,9 +187,10 @@ func benchCmd(tq chan<- task, args []string) error {
 				return
 			}
 			defer os.RemoveAll(tmp)
+
 			// copy all required files to temp dir
-			dpath := filepath.Join(tmp, sn)
-			if err = copyFile(solutionsDir(sn), dpath); err != nil {
+			dpath := filepath.Join(tmp, fname)
+			if err = copyFile(solutionsDir(fname), dpath); err != nil {
 				mlog.Printf("copy file error: %v", err)
 				return
 			}
@@ -181,46 +198,53 @@ func benchCmd(tq chan<- task, args []string) error {
 				mlog.Printf("copy test suite files error: %v", err)
 				return
 			}
+
 			// run bench
 			bstats, err := runBench(tmp, ".")
 			if err != nil {
-				mlog.Printf("benchmarking of %s failed: %v", sn, err)
+				mlog.Printf("bench of %s failed: %v", fname, err)
 				return
 			}
+
 			// prepare stats
-			sz, err := getCodeSize(dpath)
+			size, err := getCodeSize(dpath)
 			if err != nil {
-				mlog.Printf("benchmarking of %s failed: %v", sn, err)
+				mlog.Printf("bench of %s failed: %v", fname, err)
 				return
 			}
 			st := &solutionStats{
-				name:   sn,
-				benchs: bstats,
-				size:   sz,
+				name:   fname,
+				bstats: bstats,
+				size:   size,
 			}
+
 			mx.Lock()
 			sstats = append(sstats, st)
 			count := len(sstats)
 			mx.Unlock()
-			// progress
-			mlog.Printf("benchmarked %-64s: %5d / %5d - %5.1f%%",
-				st.name, count, stotal, float32(count)/float32(stotal)*100)
+
+			// report progress
+			mlog.Printf("benched %-64s: %5d / %5d - %5.1f%%",
+				st.name, count, total, float32(count)/float32(total)*100)
 		}
 	}
+
 	// wait all tasks
 	wg.Wait()
+
 	// print stats in sorted way
 	mlog.Println()
-	for _, bn := range benchs {
+	for _, bn := range bnames {
 		mlog.Printf("------------------------------ %s ------------------------------", bn)
 		mlog.Println()
-		sortStatsByBench(sstats, bn)
+		sortSolutionStatsByBench(sstats, bn)
 		for i, st := range sstats {
 			mlog.Printf("[%5d] %-64s: %s %15d symbols",
-				i+1, st.name, st.benchs[bn], st.size)
+				i+1, st.name, st.bstats[bn], st.size)
 		}
 		mlog.Println()
 	}
+
 	return nil
 }
 
@@ -228,24 +252,30 @@ func downloadCmd(tq chan<- task, args []string) error {
 	if len(args) != 0 {
 		return errInvalidUsage
 	}
-	paths, err := getSolutionPaths(tq)
+
+	// get all paths
+	uuids, err := getSolutionUUIDs(tq)
 	if err != nil {
 		return err
 	}
-	mlog.Printf("solutions total: %d", len(paths))
+	mlog.Printf("solutions total: %d", len(uuids))
 	mlog.Println()
+
+	// download each solution
 	count := 0
 	mx := sync.Mutex{}
-	if err = getSolutionCodes(tq, paths, func(uuid, author string) {
+
+	if err = getSolutionCodes(tq, uuids, func(uuid, author string) {
 		mx.Lock()
 		count++
 		c := count
 		mx.Unlock()
 		mlog.Printf("downloaded %s of %-32s: %5d / %5d - %5.1f%%",
-			uuid, author, c, len(paths), float32(c)/float32(len(paths))*100)
+			uuid, author, c, len(uuids), float32(c)/float32(len(uuids))*100)
 	}); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -253,11 +283,13 @@ func cleanCmd(_ chan<- task, args []string) error {
 	if len(args) != 0 {
 		return errInvalidUsage
 	}
+
 	cp := solutionsDir()
 	if err := os.RemoveAll(cp); err != nil {
 		return err
 	}
 	mlog.Printf("%s removed", cp)
+
 	return nil
 }
 
@@ -265,62 +297,82 @@ func solutionsDir(path ...string) string {
 	return filepath.Join(append([]string{downloadDirFlag, trackLang, exercise}, path...)...)
 }
 
-type pathMap map[string]struct{}
+type uuidMap map[string]struct{}
 
-func getSolutionPaths(tq chan<- task) (paths pathMap, err error) {
-	paths = make(pathMap)
+func getSolutionUUIDs(tq chan<- task) (uuids uuidMap, err error) {
 	// get first solutions group page
-	firstGroupPage, solutionsURL, err := getContent("solutions")
+	firstGroupPage, solutionsURL, err := getSolutionPage("", nil)
 	if err != nil {
 		err = fmt.Errorf("download of %s failed: %v", solutionsURL, err)
 		return
 	}
+
 	// get total of solutions pages
-	total, err := strconv.ParseUint(
-		decimalNumberRE.FindString(
-			solutionGroupsNumberRE.FindString(firstGroupPage)), 10, 32)
+	ms := solutionGroupsNumberRE.FindStringSubmatch(firstGroupPage)
+	if ms == nil {
+		err = errors.New("can't find solution groups number")
+		return
+	}
+	total, err := strconv.ParseUint(ms[1], 10, 64)
 	if err != nil {
 		return
 	}
+
 	// schedule downloads
 	wg := sync.WaitGroup{}
 	mx := sync.Mutex{}
+	uuids = make(uuidMap)
+
 	for i := uint64(0); i < total; i++ {
 		n := i
 		wg.Add(1)
+
 		tq <- func() {
 			defer wg.Done()
+
 			// get solution group page
-			groupPage, groupURL, err := getContent(fmt.Sprintf("solutions?page=%d", n+1))
+			groupPage, groupURL, err := getSolutionPage("", map[string]string{
+				"page": strconv.FormatUint(n+1, 10),
+			})
 			if err != nil {
 				mlog.Printf("download of %s failed: %v", groupURL, err)
 				return
 			}
-			// get solution paths
-			for _, p := range solutionPathRE.FindAllString(groupPage, -1) {
+
+			// get solution UUIDs
+			mss := solutionPathRE.FindAllStringSubmatch(groupPage, -1)
+			if mss == nil {
+				mlog.Printf("can't find solution UUIDs in %s", groupURL)
+				return
+			}
+			for _, ms := range mss {
 				// ignore duplicates if they appear
 				mx.Lock()
-				paths[p] = struct{}{}
+				uuids[ms[1]] = struct{}{}
 				mx.Unlock()
 			}
 		}
 	}
+
 	// wait all tasks
 	wg.Wait()
-	return paths, nil
+
+	return uuids, nil
 }
 
-func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid, author string)) error {
+func getSolutionCodes(tq chan<- task, uuids uuidMap, got func(uuid, author string)) error {
 	if err := os.MkdirAll(solutionsDir(), 0700); err != nil {
 		return err
 	}
+
 	// get test suite
-	for path := range paths {
-		solutionPage, solutionURL, err := getContent(path)
+	for uuid := range uuids {
+		solutionPage, solutionURL, err := getSolutionPage(uuid, nil)
 		if err != nil {
 			mlog.Printf("download of test suite %s failed: %v", solutionURL, err)
 			return err
 		}
+
 		// store test suite
 		ts, err := extractTestSuite(solutionPage)
 		if err != nil {
@@ -336,27 +388,32 @@ func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid, author strin
 		}
 		break
 	}
+
 	// schedule downloads and stores
 	wg := sync.WaitGroup{}
-	for p := range paths {
-		path := p
+
+	for k := range uuids {
+		uuid := k
 		wg.Add(1)
+
 		tq <- func() {
 			defer wg.Done()
+
 			// get solution page
-			solutionPage, solutionURL, err := getContent(path)
+			solutionPage, solutionURL, err := getSolutionPage(uuid, nil)
 			if err != nil {
 				mlog.Printf("download of %s failed: %v", solutionURL, err)
 				return
 			}
+
 			// extract solution code
 			code, author, err := extractSolutionCode(solutionPage)
 			if err != nil {
 				mlog.Printf("code extraction for %s failed: %v", solutionURL, err)
 				return
 			}
+
 			// store solution code
-			uuid := uuidRE.FindString(path)
 			fp := solutionsDir(uuid + "-" + author + ".go")
 			if err := ioutil.WriteFile(fp, []byte(code), 0600); err != nil {
 				mlog.Printf("write of %s failed: %v", fp, err)
@@ -364,7 +421,9 @@ func getSolutionCodes(tq chan<- task, paths pathMap, got func(uuid, author strin
 			got(uuid, author)
 		}
 	}
+
 	// wait all tasks
 	wg.Wait()
+
 	return nil
 }
