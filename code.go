@@ -106,71 +106,67 @@ func extractSolutionCode(solutionPage string) (code, author string, err error) {
 	if ms == nil {
 		return "", "", errNoAuthorName
 	}
-	author = ms[1]
+	author = html.UnescapeString(ms[1])
 
 	// extract code
-	sind := strings.Index(solutionPage, solutionCodeStartPattern)
-	if sind == -1 {
+	m, _ := getFirstMatch(solutionPage, solutionCodeStartPattern, solutionCodeEndPattern)
+	if m == "" {
 		return "", "", errNoSolutionCode
 	}
-	sind += len(solutionCodeStartPattern)
-	eind := strings.Index(solutionPage[sind:], solutionCodeEndPattern)
-	if eind == -1 {
-		return "", "", errNoSolutionCode
-	}
-	code = html.UnescapeString(solutionPage[sind : sind+eind])
+	code = html.UnescapeString(m)
 
 	return code, author, nil
 }
 
 func extractTestSuite(solutionPage string) (suite map[string]string, err error) {
 	// locate test suite
-	sind := strings.Index(solutionPage, testSuiteStartPattern)
-	if sind == -1 {
+	ts, _ := getFirstMatch(solutionPage, testSuiteStartPattern, testSuiteEndPattern)
+	if ts == "" {
 		return nil, errNoTestSuite
 	}
-	sind += len(testSuiteStartPattern)
-	eind := strings.Index(solutionPage[sind:], testSuiteEndPattern)
-	if eind == -1 {
-		return nil, errNoTestSuite
-	}
-	ts := solutionPage[sind : sind+eind]
 
 	// extract test files
 	suite = make(map[string]string)
 	for {
 		// locate file name
-		sind = strings.Index(ts, testFileNameStartPattern)
-		if sind == -1 {
+		var m string
+		m, ts = getFirstMatch(ts, testFileNameStartPattern, testFileNameEndPattern)
+		if m == "" {
 			if len(suite) == 0 {
 				return nil, errNoTestSuite
 			}
 			break
 		}
-		sind += len(testFileNameStartPattern)
-		eind = strings.Index(ts[sind:], testFileNameEndPattern)
-		if eind == -1 {
-			return nil, errNoTestSuite
-		}
-		name := ts[sind : sind+eind]
-		ts = ts[sind+eind+len(testSuiteEndPattern):]
+		name := html.UnescapeString(m)
 
 		// locate code
-		sind = strings.Index(ts, codeStartPattern)
-		if sind == -1 {
+		m, ts = getFirstMatch(ts, codeStartPattern, codeEndPattern)
+		if m == "" {
 			return nil, errNoTestSuite
 		}
-		sind += len(codeStartPattern)
-		eind = strings.Index(ts[sind:], codeEndPattern)
-		if eind == -1 {
-			return nil, errNoTestSuite
-		}
-		code := html.UnescapeString(ts[sind : sind+eind])
-		ts = ts[sind+eind+len(codeEndPattern):]
+		code := html.UnescapeString(m)
 
 		// fill in suite
 		suite[name] = code
 	}
 
 	return suite, nil
+}
+
+// getFirstMatch looks for a substring with given start and end patterns.
+// match contains the substring excluding patterns or empty string if nothing has been found.
+// out gets the remaining input string after the chunk and the end pattern.
+func getFirstMatch(in, sp, ep string) (match, out string) {
+	sind := strings.Index(in, sp)
+	if sind == -1 {
+		return
+	}
+	sind += len(sp)
+
+	eind := strings.Index(in[sind:], ep)
+	if eind == -1 {
+		return
+	}
+
+	return in[sind : sind+eind], in[sind+eind+len(ep):]
 }
