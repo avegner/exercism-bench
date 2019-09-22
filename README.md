@@ -3,14 +3,14 @@ This is a CLI tool to benchmark published solutions on [exercism](https://exerci
 It allows to:
 * get a total number of published solutions for a given exercise
 * download all solutions and test suite (tests and benchmarks)
-* run `go test -bench . -benchmem` for each solution (tests + benchmarks)
+* run ```go test -bench . -benchmem``` for each solution (tests + benchmarks)
 * collect time, mem, allocs, throughput and code size (symbols except comments and whitespaces) stats
 * sort benchmarking results by time for each benchmark
 * implement additional or missing benchmarks
 * learn from others and improve your algorithms
 
 # How to Install
-To install `exercism-bench` binary on any OS supported by Go toolchain just run:
+To install **exercism-bench** binary on any OS supported by Go toolchain just run:
 ```
 go get github.com/avegner/exercism-bench
 ```
