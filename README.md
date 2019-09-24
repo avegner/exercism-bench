@@ -49,3 +49,18 @@ Typical use-case would be:
 * implementation of additional or missing tests and benchmarks (in ```<solutions-dir>/go/<exercise>/test-suite``` directory)
 * ```exercism-bench transpose bench```
 * ```exercism-bench transpose clean```
+
+# Benchmarking Stats
+A stats table looks like this (sorted by time):
+```
+------------------------------ Benchmark<name-1> ------------------------------
+
+[   1] <uuid-1>-<author-1>.go     :       5065.0 ns          240 B mem           10 allocs          643 symbols
+[   2] <uuid-2>-<author-2>.go     :      16173.0 ns          624 B mem           46 allocs          410 symbols
+[   3] <uuid-3>-<author-3>.go     :      17157.0 ns         1856 B mem          154 allocs          288 symbols
+...
+
+------------------------------ Benchmark<name-N> ------------------------------
+
+...
+```
